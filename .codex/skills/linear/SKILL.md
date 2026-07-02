@@ -237,6 +237,99 @@ mutation CreateComment($issueId: String!, $body: String!) {
 }
 ```
 
+### Create a follow-up issue in Backlog
+
+Use this when you discover necessary out-of-scope work and need to file a
+separate issue for later triage (see the workflow's "Follow-up issues"
+section). Do it in three steps: resolve the parent's team/project and the
+`Backlog` state id, create the issue, then link it back to the parent.
+
+1. Resolve the parent issue's team, project, and the team's `Backlog` state id.
+   Pick the state whose `type` is `backlog` (do not hardcode the name):
+
+```graphql
+query ParentForFollowUp($id: String!) {
+  issue(id: $id) {
+    id
+    team {
+      id
+      states {
+        nodes {
+          id
+          name
+          type
+        }
+      }
+    }
+    project {
+      id
+    }
+  }
+}
+```
+
+2. Create the issue in the same team + project, placed in `Backlog`. Give it a
+   clear title, a description with context, and acceptance criteria:
+
+```graphql
+mutation CreateFollowUp(
+  $teamId: String!
+  $projectId: String
+  $stateId: String
+  $title: String!
+  $description: String!
+) {
+  issueCreate(
+    input: {
+      teamId: $teamId
+      projectId: $projectId
+      stateId: $stateId
+      title: $title
+      description: $description
+    }
+  ) {
+    success
+    issue {
+      id
+      identifier
+      url
+    }
+  }
+}
+```
+
+3. Link the new issue back to the parent with `issueRelationCreate`. There is no
+   `blockedBy` enum — "blocked by" is the inverse of a `blocks` relation, and
+   Symphony's dependency gate reads these relations. Direction matters:
+
+   - **Follow-up depends on the parent** (parent must land first, i.e. the
+     follow-up is *blocked by* the parent): create a `blocks` relation with
+     `issueId` = the **parent** (the blocker) and `relatedIssueId` = the new
+     follow-up (the blocked issue).
+   - **Plain association** (no ordering): use `related`.
+
+```graphql
+mutation RelateIssues(
+  $issueId: String!
+  $relatedIssueId: String!
+  $type: IssueRelationType!
+) {
+  issueRelationCreate(
+    input: { issueId: $issueId, relatedIssueId: $relatedIssueId, type: $type }
+  ) {
+    success
+    issueRelation {
+      id
+      type
+    }
+  }
+}
+```
+
+If `issueCreate` / `issueRelationCreate` input shapes differ in the targeted
+schema, introspect `IssueCreateInput` / `IssueRelationCreateInput` (see
+"Discovering unfamiliar operations") before retrying.
+
 ### Move an issue to a different state
 
 Use `issueUpdate` with the destination `stateId`:

@@ -79,6 +79,9 @@ self-serve. Below, each one and *where it lives and why*.
 > merges" workflow whose `after_create` hook clones the repo, seeds a local
 > `.env`, and runs `pnpm install`, and whose prompt enforces typecheck/test/e2e
 > and Braintrust eval evidence before handing off to a `Human Review` state.
+> Complete, working copies of this workflow and its companion live on the **`gus`
+> branch** of this fork (kept off `autonomous` so the default branch stays
+> generic); use them as a concrete reference to adapt for your own repo.
 
 ### 2.2 `.codex/skills/<skill>/SKILL.md` — agent-facing skills
 

@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, ParkedRunsHooks, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -415,11 +415,13 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
+        park_or_clear_running_issue(state, issue, :terminal)
         terminate_running_issue(state, issue.id, true)
 
       !issue_routable?(issue) ->
         Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
 
+        park_or_clear_running_issue(state, issue, :leave_active)
         terminate_running_issue(state, issue.id, false)
 
       active_issue_state?(issue.state, active_states) ->
@@ -428,6 +430,7 @@ defmodule SymphonyElixir.Orchestrator do
       true ->
         Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
+        park_or_clear_running_issue(state, issue, :leave_active)
         terminate_running_issue(state, issue.id, false)
     end
   end
@@ -450,10 +453,12 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Blocked issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; releasing block")
         cleanup_issue_workspace(issue.identifier, blocked_issue_worker_host(state, issue.id))
+        ParkedRunsHooks.on_terminal(issue.identifier)
         release_issue_claim(state, issue.id)
 
       !issue_routable?(issue) ->
         Logger.info("Blocked issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; releasing block")
+        park_blocked_issue(state, issue)
         release_issue_claim(state, issue.id)
 
       active_issue_state?(issue.state, active_states) ->
@@ -461,6 +466,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       true ->
         Logger.info("Blocked issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; releasing block")
+        park_blocked_issue(state, issue)
         release_issue_claim(state, issue.id)
     end
   end
@@ -568,6 +574,34 @@ defmodule SymphonyElixir.Orchestrator do
 
       _ ->
         release_issue_claim(state, issue_id)
+    end
+  end
+
+  defp park_or_clear_running_issue(%State{} = _state, %Issue{} = issue, :terminal) do
+    ParkedRunsHooks.on_terminal(issue.identifier)
+  end
+
+  defp park_or_clear_running_issue(%State{} = state, %Issue{} = issue, :leave_active) do
+    case Map.get(state.running, issue.id) do
+      running_entry when is_map(running_entry) ->
+        ParkedRunsHooks.on_leave_active(
+          issue,
+          running_entry_session_id(running_entry),
+          Map.get(running_entry, :workspace_path)
+        )
+
+      _ ->
+        ParkedRunsHooks.on_leave_active(issue, nil, nil)
+    end
+  end
+
+  defp park_blocked_issue(%State{} = state, %Issue{} = issue) do
+    case Map.get(state.blocked, issue.id) do
+      %{session_id: session_id, workspace_path: workspace_path} ->
+        ParkedRunsHooks.on_leave_active(issue, session_id, workspace_path)
+
+      _ ->
+        ParkedRunsHooks.on_leave_active(issue, nil, nil)
     end
   end
 

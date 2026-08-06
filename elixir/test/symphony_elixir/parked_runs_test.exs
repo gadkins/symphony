@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.ParkedRunsTest do
   use ExUnit.Case, async: false
 
-  alias SymphonyElixir.{LogFile, ParkedRuns}
+  alias SymphonyElixir.ParkedRuns
 
   setup do
     tmp = Path.join(System.tmp_dir!(), "parked-runs-#{System.unique_integer([:positive])}")
@@ -15,8 +15,8 @@ defmodule SymphonyElixir.ParkedRunsTest do
 
     on_exit(fn ->
       if pid = Process.whereis(ParkedRuns), do: GenServer.stop(pid)
-      restart_application_parked_runs()
       restore_log_file_env(previous_log_file)
+      restart_application_parked_runs()
       File.rm_rf(tmp)
     end)
 
@@ -43,7 +43,7 @@ defmodule SymphonyElixir.ParkedRunsTest do
     Application.put_env(:symphony_elixir, :log_file, log_file)
   end
 
-  test "upserts, lists, and persists across process restart", %{tmp: tmp, log_file: log_file} do
+  test "upserts, lists, and persists across process restart", %{log_file: log_file} do
     assert :ok =
              ParkedRuns.upsert(%{
                issue_identifier: "FIL-39",

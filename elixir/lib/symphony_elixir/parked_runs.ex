@@ -124,8 +124,15 @@ defmodule SymphonyElixir.ParkedRuns do
     Enum.reduce(@entry_keys, %{}, fn key, acc ->
       string_key = Atom.to_string(key)
 
-      case entry[string_key] || entry[key] do
-        nil -> acc
+      value =
+        cond do
+          Map.has_key?(entry, string_key) -> Map.fetch!(entry, string_key)
+          Map.has_key?(entry, key) -> Map.fetch!(entry, key)
+          true -> :missing
+        end
+
+      case value do
+        :missing -> acc
         value -> Map.put(acc, key, decode_entry_value(key, value))
       end
     end)

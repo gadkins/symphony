@@ -21,6 +21,36 @@ defmodule SymphonyElixir.ParkedRunsHooks do
     ParkedRuns.delete(issue_identifier)
   end
 
+  @doc """
+  Drop parked entries that are terminal or back in an active state.
+  Keep Human Review / Merging / unknown (not present in `issues_by_identifier`).
+  """
+  @spec reconcile([map()], %{optional(String.t()) => Issue.t()}, MapSet.t(), MapSet.t()) :: :ok
+  def reconcile(parked_entries, issues_by_identifier, active_states, terminal_states)
+      when is_list(parked_entries) and is_map(issues_by_identifier) do
+    Enum.each(parked_entries, fn entry ->
+      identifier = entry.issue_identifier
+
+      case Map.get(issues_by_identifier, identifier) do
+        %Issue{state: state} when is_binary(state) ->
+          normalized = normalize_issue_state(state)
+
+          cond do
+            MapSet.member?(terminal_states, normalized) -> on_terminal(identifier)
+            MapSet.member?(active_states, normalized) -> on_terminal(identifier)
+            true -> :ok
+          end
+
+        _ ->
+          :ok
+      end
+    end)
+  end
+
   defp normalize_session_id(id) when id in [nil, "", "n/a"], do: nil
   defp normalize_session_id(id) when is_binary(id), do: id
+
+  defp normalize_issue_state(state_name) when is_binary(state_name) do
+    String.downcase(String.trim(state_name))
+  end
 end

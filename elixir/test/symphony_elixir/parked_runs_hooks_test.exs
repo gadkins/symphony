@@ -82,6 +82,13 @@ defmodule SymphonyElixir.ParkedRunsHooksTest do
     assert ParkedRuns.get("FIL-39") == nil
   end
 
+  test "keep_parked_state? is true for Human Review and Merging" do
+    assert ParkedRunsHooks.keep_parked_state?("Human Review")
+    assert ParkedRunsHooks.keep_parked_state?("merging")
+    refute ParkedRunsHooks.keep_parked_state?("In Progress")
+    refute ParkedRunsHooks.keep_parked_state?("Done")
+  end
+
   test "reconcile deletes terminal and active rework, keeps Human Review / Merging" do
     ParkedRuns.upsert(%{
       issue_identifier: "FIL-39",
@@ -111,19 +118,30 @@ defmodule SymphonyElixir.ParkedRunsHooksTest do
       linear_state: "Human Review"
     })
 
+    ParkedRuns.upsert(%{
+      issue_identifier: "FIL-43",
+      session_id: "s5",
+      workspace_path: "/ws/FIL-43",
+      linear_state: "Human Review"
+    })
+
+    # Merging is often configured as an active state; keep_parked_state?/1 must win.
     issues_by_identifier = %{
       "FIL-39" => %Issue{id: "i39", identifier: "FIL-39", state: "Done"},
-      "FIL-41" => %Issue{id: "i41", identifier: "FIL-41", state: "In Progress"}
-      # FIL-40 Merging and FIL-42 unknown omitted → keep
+      "FIL-40" => %Issue{id: "i40", identifier: "FIL-40", state: "Merging"},
+      "FIL-41" => %Issue{id: "i41", identifier: "FIL-41", state: "In Progress"},
+      "FIL-43" => %Issue{id: "i43", identifier: "FIL-43", state: "Rework"}
+      # FIL-42 unknown omitted → keep
     }
 
-    active = MapSet.new(["todo", "in progress"])
+    active = MapSet.new(["todo", "in progress", "merging", "rework"])
     terminal = MapSet.new(["done", "canceled"])
 
     assert :ok = ParkedRunsHooks.reconcile(ParkedRuns.list(), issues_by_identifier, active, terminal)
 
     assert ParkedRuns.get("FIL-39") == nil
     assert ParkedRuns.get("FIL-41") == nil
+    assert ParkedRuns.get("FIL-43") == nil
     assert ParkedRuns.get("FIL-40").linear_state == "Merging"
     assert ParkedRuns.get("FIL-42").linear_state == "Human Review"
   end

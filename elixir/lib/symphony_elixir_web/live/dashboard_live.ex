@@ -531,11 +531,29 @@ defmodule SymphonyElixirWeb.DashboardLive do
             class="log-pane"
             phx-hook="LogStickBottom"
             data-stick-bottom={to_string(@stick_bottom)}
-          ><%= Enum.join(visible_lines(@drawer_tab, @engine_lines, @codex_lines), "\n") %></pre>
+          ><%= log_pane_text(@drawer_issue, @drawer_tab, @engine_lines, @codex_lines) %></pre>
         </aside>
       <% end %>
     </section>
     """
+  end
+
+  defp log_pane_text(issue, :engine, [], _codex_lines) do
+    "No matching engine log lines for #{issue.issue_identifier} yet."
+  end
+
+  defp log_pane_text(issue, :codex, _engine_lines, []) do
+    cond do
+      issue.session_id in [nil, "", "n/a"] ->
+        "No Codex session_id for this run."
+
+      true ->
+        "Codex session transcript not found or empty for session #{issue.session_id}."
+    end
+  end
+
+  defp log_pane_text(_issue, tab, engine_lines, codex_lines) do
+    Enum.join(visible_lines(tab, engine_lines, codex_lines), "\n")
   end
 
   defp assign_drawer_defaults(socket) do

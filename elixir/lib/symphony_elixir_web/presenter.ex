@@ -92,15 +92,15 @@ defmodule SymphonyElixirWeb.Presenter do
       running: running && running_issue_payload(running),
       retry: retry && retry_issue_payload(retry),
       blocked: blocked && blocked_issue_payload(blocked),
-      logs: logs_payload(issue_identifier, running, blocked, parked),
+      logs: logs_payload(issue_identifier, running, blocked, parked, retry),
       recent_events: recent_events_payload(running || blocked),
       last_error: (blocked && blocked.error) || (retry && retry.error),
       tracked: %{}
     }
   end
 
-  defp logs_payload(issue_identifier, running, blocked, parked) do
-    session_id = session_id_from_entries(running, blocked, parked)
+  defp logs_payload(issue_identifier, running, blocked, parked, retry \\ nil) do
+    session_id = session_id_from_entries(running, blocked, parked, retry)
     {codex_path, codex_tail} = codex_logs(session_id)
 
     %{
@@ -137,9 +137,10 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
-  defp session_id_from_entries(running, blocked, parked) do
+  defp session_id_from_entries(running, blocked, parked, retry \\ nil) do
     (running && running.session_id) ||
       (blocked && blocked.session_id) ||
+      (retry && Map.get(retry, :session_id)) ||
       (parked && Map.get(parked, :session_id))
   end
 
@@ -196,7 +197,8 @@ defmodule SymphonyElixirWeb.Presenter do
       due_at: due_at_iso8601(entry.due_in_ms),
       error: entry.error,
       worker_host: Map.get(entry, :worker_host),
-      workspace_path: Map.get(entry, :workspace_path)
+      workspace_path: Map.get(entry, :workspace_path),
+      session_id: Map.get(entry, :session_id)
     }
   end
 

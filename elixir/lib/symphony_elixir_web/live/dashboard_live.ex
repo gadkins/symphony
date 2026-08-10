@@ -28,6 +28,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
+  def handle_params(params, _uri, socket) do
+    case Map.get(params, "issue") do
+      id when is_binary(id) and id != "" ->
+        {:noreply, maybe_open_issue_from_query(socket, String.trim(id))}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
   def handle_info(:runtime_tick, socket) do
     schedule_runtime_tick()
 
@@ -47,30 +58,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_event("open_drawer", %{"issue_identifier" => id}, socket) do
-    meta = resolve_issue_meta(socket.assigns.payload, id)
-    engine = EngineLogTailer.initial_lines(id, max_lines: @log_buffer_max_lines)
-    engine_follow = EngineLogTailer.follow_state(id)
-
-    codex_opts = codex_sessions_opts()
-
-    {codex_lines, codex_follow} =
-      case CodexSessionTailer.resolve_path(meta.session_id, codex_opts) do
-        {:ok, path} ->
-          {CodexSessionTailer.readable_lines(path, codex_opts), CodexSessionTailer.follow_state(path)}
-
-        {:error, _} ->
-          {[], nil}
-      end
-
-    {:noreply,
-     socket
-     |> assign(:drawer_issue, meta)
-     |> assign(:drawer_tab, :engine)
-     |> assign(:engine_lines, engine)
-     |> assign(:codex_lines, Enum.take(codex_lines, -@log_buffer_max_lines))
-     |> assign(:engine_follow, engine_follow)
-     |> assign(:codex_follow, codex_follow)
-     |> assign(:stick_bottom, true)}
+    {:noreply, open_drawer_for(socket, id)}
   end
 
   def handle_event("close_drawer", _params, socket) do
@@ -95,6 +83,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def render(assigns) do
     ~H"""
     <section class="dashboard-shell">
+      <%= if msg = Phoenix.Flash.get(@flash, :error) do %>
+        <div class="flash flash-error" role="alert"><%= msg %></div>
+      <% end %>
       <header class="hero-card">
         <div class="hero-grid">
           <div>
@@ -556,6 +547,48 @@ defmodule SymphonyElixirWeb.DashboardLive do
     |> assign(:stick_bottom, true)
     |> assign(:engine_follow, nil)
     |> assign(:codex_follow, nil)
+  end
+
+  defp maybe_open_issue_from_query(socket, id) do
+    if issue_in_payload?(socket.assigns.payload, id) do
+      open_drawer_for(socket, id)
+    else
+      put_flash(socket, :error, "Issue not in live or parked index")
+    end
+  end
+
+  defp issue_in_payload?(payload, id) when is_binary(id) do
+    Enum.any?([:running, :blocked, :retrying, :parked], fn key ->
+      Enum.any?(payload[key] || [], fn entry ->
+        Map.get(entry, :issue_identifier) == id
+      end)
+    end)
+  end
+
+  defp open_drawer_for(socket, id) when is_binary(id) do
+    meta = resolve_issue_meta(socket.assigns.payload, id)
+    engine = EngineLogTailer.initial_lines(id, max_lines: @log_buffer_max_lines)
+    engine_follow = EngineLogTailer.follow_state(id)
+
+    codex_opts = codex_sessions_opts()
+
+    {codex_lines, codex_follow} =
+      case CodexSessionTailer.resolve_path(meta.session_id, codex_opts) do
+        {:ok, path} ->
+          {CodexSessionTailer.readable_lines(path, codex_opts), CodexSessionTailer.follow_state(path)}
+
+        {:error, _} ->
+          {[], nil}
+      end
+
+    socket
+    |> assign(:drawer_issue, meta)
+    |> assign(:drawer_tab, :engine)
+    |> assign(:engine_lines, engine)
+    |> assign(:codex_lines, Enum.take(codex_lines, -@log_buffer_max_lines))
+    |> assign(:engine_follow, engine_follow)
+    |> assign(:codex_follow, codex_follow)
+    |> assign(:stick_bottom, true)
   end
 
   defp maybe_poll_log_tails(%{assigns: %{drawer_issue: nil}} = socket), do: socket

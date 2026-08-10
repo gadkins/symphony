@@ -820,6 +820,78 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute has_element?(view, "#log-drawer")
   end
 
+  test "?issue= deep-link opens drawer for known running issue" do
+    %{log_file: log_file} = isolate_parked_runs_and_logs!()
+
+    File.write!(log_file, "info issue_identifier=FIL-39 deep link engine\n")
+
+    snapshot =
+      static_snapshot()
+      |> put_in([:running], [
+        %{
+          issue_id: "issue-39",
+          identifier: "FIL-39",
+          issue_url: "https://example.org/issues/FIL-39",
+          state: "In Progress",
+          session_id: "sess-deep-39",
+          turn_count: 1,
+          codex_app_server_pid: nil,
+          last_codex_message: nil,
+          last_codex_timestamp: nil,
+          last_codex_event: nil,
+          codex_input_tokens: 0,
+          codex_output_tokens: 0,
+          codex_total_tokens: 0,
+          started_at: DateTime.utc_now(),
+          workspace_path: "/workspaces/FIL-39"
+        }
+      ])
+
+    orchestrator_name = Module.concat(__MODULE__, :DeepLinkOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot,
+        refresh: %{
+          queued: false,
+          coalesced: false,
+          requested_at: DateTime.utc_now(),
+          operations: []
+        }
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, html} = live(build_conn(), "/?issue=FIL-39")
+    assert has_element?(view, "#log-drawer")
+    assert html =~ "FIL-39"
+    assert html =~ "deep link engine"
+  end
+
+  test "?issue= unknown shows flash and leaves drawer closed" do
+    snapshot = static_snapshot()
+    orchestrator_name = Module.concat(__MODULE__, :DeepLinkUnknownOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot,
+        refresh: %{
+          queued: false,
+          coalesced: false,
+          requested_at: DateTime.utc_now(),
+          operations: []
+        }
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, html} = live(build_conn(), "/?issue=FIL-MISSING")
+    refute has_element?(view, "#log-drawer")
+    assert html =~ "Issue not in live or parked index"
+  end
+
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do
     spec = HttpServer.child_spec(port: 0)
     assert spec.id == HttpServer

@@ -5,8 +5,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.{CodexSessionTailer, EngineLogTailer}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
+
   @runtime_tick_ms 1_000
+  @log_buffer_max_lines 500
 
   @impl true
   def mount(_params, _session, socket) do
@@ -14,6 +17,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       socket
       |> assign(:payload, load_payload())
       |> assign(:now, DateTime.utc_now())
+      |> assign_drawer_defaults()
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -26,7 +30,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
   @impl true
   def handle_info(:runtime_tick, socket) do
     schedule_runtime_tick()
-    {:noreply, assign(socket, :now, DateTime.utc_now())}
+
+    {:noreply,
+     socket
+     |> assign(:now, DateTime.utc_now())
+     |> maybe_poll_log_tails()}
   end
 
   @impl true
@@ -35,6 +43,52 @@ defmodule SymphonyElixirWeb.DashboardLive do
      socket
      |> assign(:payload, load_payload())
      |> assign(:now, DateTime.utc_now())}
+  end
+
+  @impl true
+  def handle_event("open_drawer", %{"issue_identifier" => id}, socket) do
+    meta = resolve_issue_meta(socket.assigns.payload, id)
+    engine = EngineLogTailer.initial_lines(id, max_lines: @log_buffer_max_lines)
+    engine_follow = EngineLogTailer.follow_state(id)
+
+    codex_opts = codex_sessions_opts()
+
+    {codex_lines, codex_follow} =
+      case CodexSessionTailer.resolve_path(meta.session_id, codex_opts) do
+        {:ok, path} ->
+          {CodexSessionTailer.readable_lines(path, codex_opts), CodexSessionTailer.follow_state(path)}
+
+        {:error, _} ->
+          {[], nil}
+      end
+
+    {:noreply,
+     socket
+     |> assign(:drawer_issue, meta)
+     |> assign(:drawer_tab, :engine)
+     |> assign(:engine_lines, engine)
+     |> assign(:codex_lines, Enum.take(codex_lines, -@log_buffer_max_lines))
+     |> assign(:engine_follow, engine_follow)
+     |> assign(:codex_follow, codex_follow)
+     |> assign(:stick_bottom, true)}
+  end
+
+  def handle_event("close_drawer", _params, socket) do
+    {:noreply, assign_drawer_defaults(socket)}
+  end
+
+  def handle_event("drawer_tab", %{"tab" => tab}, socket) do
+    drawer_tab =
+      case tab do
+        "codex" -> :codex
+        _ -> :engine
+      end
+
+    {:noreply, assign(socket, :drawer_tab, drawer_tab)}
+  end
+
+  def handle_event("toggle_stick_bottom", _params, socket) do
+    {:noreply, assign(socket, :stick_bottom, !socket.assigns.stick_bottom)}
   end
 
   @impl true
@@ -155,10 +209,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </tr>
                 </thead>
                 <tbody>
-                  <tr :for={entry <- @payload.running}>
+                  <tr :for={entry <- @payload.running} data-issue={entry.issue_identifier}>
                     <td>
                       <div class="issue-stack">
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
+                        <button
+                          type="button"
+                          class="subtle-button"
+                          phx-click="open_drawer"
+                          phx-value-issue_identifier={entry.issue_identifier}
+                        >
+                          Logs
+                        </button>
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
                     </td>
@@ -236,10 +298,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </tr>
                 </thead>
                 <tbody>
-                  <tr :for={entry <- @payload.blocked}>
+                  <tr :for={entry <- @payload.blocked} data-issue={entry.issue_identifier}>
                     <td>
                       <div class="issue-stack">
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
+                        <button
+                          type="button"
+                          class="subtle-button"
+                          phx-click="open_drawer"
+                          phx-value-issue_identifier={entry.issue_identifier}
+                        >
+                          Logs
+                        </button>
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
                     </td>
@@ -286,6 +356,69 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <% end %>
         </section>
 
+        <section :if={@payload[:parked] not in [nil, []]} class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Parked</h2>
+              <p class="section-copy">Issues retained after leaving active work (Human Review / Merging).</p>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table class="data-table" style="min-width: 680px;">
+              <thead>
+                <tr>
+                  <th>Issue</th>
+                  <th>State</th>
+                  <th>Session</th>
+                  <th>Workspace</th>
+                  <th>Parked at</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr :for={entry <- @payload.parked} data-issue={entry.issue_identifier}>
+                  <td>
+                    <div class="issue-stack">
+                      <span class="issue-id"><%= entry.issue_identifier %></span>
+                      <button
+                        type="button"
+                        class="subtle-button"
+                        phx-click="open_drawer"
+                        phx-value-issue_identifier={entry.issue_identifier}
+                      >
+                        Logs
+                      </button>
+                      <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                    </div>
+                  </td>
+                  <td>
+                    <span class={state_badge_class(entry.linear_state || "Parked")}>
+                      <%= entry.linear_state || "Parked" %>
+                    </span>
+                  </td>
+                  <td>
+                    <%= if entry.session_id do %>
+                      <button
+                        type="button"
+                        class="subtle-button"
+                        data-label="Copy ID"
+                        data-copy={entry.session_id}
+                        onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                      >
+                        Copy ID
+                      </button>
+                    <% else %>
+                      <span class="muted">n/a</span>
+                    <% end %>
+                  </td>
+                  <td class="mono"><%= entry.workspace_path || "n/a" %></td>
+                  <td class="mono"><%= entry.parked_at || "n/a" %></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
         <section class="section-card">
           <div class="section-header">
             <div>
@@ -308,10 +441,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </tr>
                 </thead>
                 <tbody>
-                  <tr :for={entry <- @payload.retrying}>
+                  <tr :for={entry <- @payload.retrying} data-issue={entry.issue_identifier}>
                     <td>
                       <div class="issue-stack">
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
+                        <button
+                          type="button"
+                          class="subtle-button"
+                          phx-click="open_drawer"
+                          phx-value-issue_identifier={entry.issue_identifier}
+                        >
+                          Logs
+                        </button>
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
                     </td>
@@ -325,8 +466,192 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <% end %>
         </section>
       <% end %>
+
+      <%= if @drawer_issue do %>
+        <div class="drawer-backdrop" phx-click="close_drawer"></div>
+        <aside
+          id="log-drawer"
+          class="log-drawer"
+          phx-window-keydown="close_drawer"
+          phx-key="Escape"
+        >
+          <header class="log-drawer-header">
+            <div class="log-drawer-heading">
+              <h2 class="log-drawer-title"><%= @drawer_issue.issue_identifier %></h2>
+              <div class="log-drawer-meta">
+                <span class={if(@drawer_issue.parked?, do: "state-badge state-badge-warning", else: "state-badge state-badge-active")}>
+                  <%= if @drawer_issue.parked?, do: "Parked", else: "Live" %>
+                </span>
+                <%= if @drawer_issue.linear_state do %>
+                  <span class={state_badge_class(@drawer_issue.linear_state)}>
+                    <%= @drawer_issue.linear_state %>
+                  </span>
+                <% end %>
+              </div>
+              <%= if @drawer_issue.session_id do %>
+                <p class="log-drawer-sub mono">
+                  session:
+                  <button
+                    type="button"
+                    class="subtle-button"
+                    data-label="Copy session"
+                    data-copy={@drawer_issue.session_id}
+                    onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                  >
+                    Copy session
+                  </button>
+                </p>
+              <% end %>
+              <%= if @drawer_issue.workspace_path do %>
+                <p class="log-drawer-sub mono muted"><%= @drawer_issue.workspace_path %></p>
+              <% end %>
+            </div>
+            <button type="button" class="secondary" phx-click="close_drawer">Close</button>
+          </header>
+
+          <div class="drawer-tabs">
+            <button
+              type="button"
+              class={if(@drawer_tab == :engine, do: "drawer-tab drawer-tab-active", else: "drawer-tab")}
+              phx-click="drawer_tab"
+              phx-value-tab="engine"
+            >
+              Engine
+            </button>
+            <button
+              type="button"
+              class={if(@drawer_tab == :codex, do: "drawer-tab drawer-tab-active", else: "drawer-tab")}
+              phx-click="drawer_tab"
+              phx-value-tab="codex"
+            >
+              Codex
+            </button>
+            <button
+              type="button"
+              class="subtle-button drawer-stick-toggle"
+              phx-click="toggle_stick_bottom"
+            >
+              <%= if @stick_bottom, do: "Stick bottom: on", else: "Stick bottom: off" %>
+            </button>
+          </div>
+
+          <pre
+            id="log-pane"
+            class="log-pane"
+            phx-hook="LogStickBottom"
+            data-stick-bottom={to_string(@stick_bottom)}
+          ><%= Enum.join(visible_lines(@drawer_tab, @engine_lines, @codex_lines), "\n") %></pre>
+        </aside>
+      <% end %>
     </section>
     """
+  end
+
+  defp assign_drawer_defaults(socket) do
+    socket
+    |> assign(:drawer_issue, nil)
+    |> assign(:drawer_tab, :engine)
+    |> assign(:engine_lines, [])
+    |> assign(:codex_lines, [])
+    |> assign(:stick_bottom, true)
+    |> assign(:engine_follow, nil)
+    |> assign(:codex_follow, nil)
+  end
+
+  defp maybe_poll_log_tails(%{assigns: %{drawer_issue: nil}} = socket), do: socket
+
+  defp maybe_poll_log_tails(socket) do
+    {engine_lines, engine_follow} =
+      case socket.assigns.engine_follow do
+        nil ->
+          {socket.assigns.engine_lines, nil}
+
+        follow ->
+          {new_lines, next_follow} = EngineLogTailer.poll(follow)
+          {append_trimmed(socket.assigns.engine_lines, new_lines), next_follow}
+      end
+
+    {codex_lines, codex_follow} =
+      case socket.assigns.codex_follow do
+        nil ->
+          {socket.assigns.codex_lines, nil}
+
+        follow ->
+          {new_lines, next_follow} = CodexSessionTailer.poll(follow)
+          {append_trimmed(socket.assigns.codex_lines, new_lines), next_follow}
+      end
+
+    socket
+    |> assign(:engine_lines, engine_lines)
+    |> assign(:codex_lines, codex_lines)
+    |> assign(:engine_follow, engine_follow)
+    |> assign(:codex_follow, codex_follow)
+  end
+
+  defp append_trimmed(existing, new_lines) when new_lines == [], do: existing
+
+  defp append_trimmed(existing, new_lines) do
+    existing
+    |> Kernel.++(new_lines)
+    |> Enum.take(-@log_buffer_max_lines)
+  end
+
+  defp visible_lines(:codex, _engine_lines, codex_lines), do: codex_lines
+  defp visible_lines(_tab, engine_lines, _codex_lines), do: engine_lines
+
+  defp resolve_issue_meta(payload, id) when is_binary(id) do
+    parked = Enum.find(payload[:parked] || [], &(&1.issue_identifier == id))
+    running = Enum.find(payload[:running] || [], &(&1.issue_identifier == id))
+    blocked = Enum.find(payload[:blocked] || [], &(&1.issue_identifier == id))
+    retrying = Enum.find(payload[:retrying] || [], &(&1.issue_identifier == id))
+
+    cond do
+      running ->
+        %{
+          issue_identifier: id,
+          session_id: Map.get(running, :session_id),
+          parked?: false,
+          linear_state: Map.get(running, :state),
+          workspace_path: Map.get(running, :workspace_path)
+        }
+
+      blocked ->
+        %{
+          issue_identifier: id,
+          session_id: Map.get(blocked, :session_id),
+          parked?: false,
+          linear_state: Map.get(blocked, :state),
+          workspace_path: Map.get(blocked, :workspace_path)
+        }
+
+      retrying ->
+        %{
+          issue_identifier: id,
+          session_id: (parked && Map.get(parked, :session_id)) || Map.get(retrying, :session_id),
+          parked?: not is_nil(parked),
+          linear_state: (parked && Map.get(parked, :linear_state)) || nil,
+          workspace_path:
+            Map.get(retrying, :workspace_path) || (parked && Map.get(parked, :workspace_path))
+        }
+
+      parked ->
+        %{
+          issue_identifier: id,
+          session_id: Map.get(parked, :session_id),
+          parked?: true,
+          linear_state: Map.get(parked, :linear_state),
+          workspace_path: Map.get(parked, :workspace_path)
+        }
+
+      true ->
+        %{
+          issue_identifier: id,
+          session_id: nil,
+          parked?: false,
+          linear_state: nil,
+          workspace_path: nil
+        }
+    end
   end
 
   defp load_payload do
@@ -339,6 +664,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp snapshot_timeout_ms do
     Endpoint.config(:snapshot_timeout_ms) || 15_000
+  end
+
+  defp codex_sessions_opts do
+    case Application.get_env(:symphony_elixir, :codex_sessions_root) do
+      root when is_binary(root) and root != "" -> [sessions_root: root]
+      _ -> []
+    end
   end
 
   attr(:identifier, :string, required: true)
@@ -432,8 +764,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
     cond do
       String.contains?(normalized, ["progress", "running", "active"]) -> "#{base} state-badge-active"
       String.contains?(normalized, ["blocked", "error", "failed"]) -> "#{base} state-badge-danger"
-      String.contains?(normalized, ["todo", "queued", "pending", "retry"]) -> "#{base} state-badge-warning"
-      true -> base
+      String.contains?(normalized, ["todo", "queued", "pending", "retry", "review", "parked", "merging"]) ->
+        "#{base} state-badge-warning"
+
+      true ->
+        base
     end
   end
 

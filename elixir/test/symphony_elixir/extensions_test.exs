@@ -605,6 +605,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
     assert dashboard_css =~ "text-decoration-thickness: 1px"
+    assert dashboard_css =~ ".log-drawer"
+    assert dashboard_css =~ "min(40vw, 36rem)"
+    assert dashboard_css =~ ".drawer-backdrop"
+    assert dashboard_css =~ ".log-pane"
 
     favicon_conn = get(build_conn(), "/favicon.png")
     assert response(favicon_conn, 200) == File.read!("priv/static/favicon.png")
@@ -716,6 +720,104 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, _view, html} = live(build_conn(), "/")
     assert html =~ "Snapshot unavailable"
     assert html =~ "snapshot_unavailable"
+  end
+
+  test "clicking Logs opens the log drawer with engine tab" do
+    %{log_file: log_file, sessions_root: sessions_root} = isolate_parked_runs_and_logs!()
+
+    File.write!(
+      log_file,
+      "info issue_identifier=FIL-39 engine hello for drawer\ninfo issue_identifier=OTHER skip\n"
+    )
+
+    session_id = "sess-drawer-39"
+    session_path = Path.join(sessions_root, "2026/08/10/rollout-2026-08-10T00-00-00-#{session_id}.jsonl")
+    File.mkdir_p!(Path.dirname(session_path))
+
+    File.write!(
+      session_path,
+      Jason.encode!(%{
+        "type" => "event_msg",
+        "payload" => %{"type" => "agent_message", "message" => "codex drawer hello"}
+      }) <> "\n"
+    )
+
+    :ok =
+      ParkedRuns.upsert(%{
+        issue_identifier: "FIL-PARKED",
+        session_id: "sess-parked-drawer",
+        workspace_path: "/workspaces/FIL-PARKED",
+        linear_state: "Human Review"
+      })
+
+    snapshot =
+      static_snapshot()
+      |> put_in([:running], [
+        %{
+          issue_id: "issue-39",
+          identifier: "FIL-39",
+          issue_url: "https://example.org/issues/FIL-39",
+          state: "In Progress",
+          session_id: session_id,
+          turn_count: 3,
+          codex_app_server_pid: nil,
+          last_codex_message: "working",
+          last_codex_timestamp: nil,
+          last_codex_event: :notification,
+          codex_input_tokens: 1,
+          codex_output_tokens: 2,
+          codex_total_tokens: 3,
+          started_at: DateTime.utc_now(),
+          workspace_path: "/workspaces/FIL-39"
+        }
+      ])
+
+    orchestrator_name = Module.concat(__MODULE__, :DrawerOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot,
+        refresh: %{
+          queued: false,
+          coalesced: false,
+          requested_at: DateTime.utc_now(),
+          operations: []
+        }
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, html} = live(build_conn(), "/")
+    assert html =~ "FIL-39"
+    assert html =~ "Parked"
+    assert html =~ "FIL-PARKED"
+    assert html =~ "Logs"
+    refute has_element?(view, "#log-drawer")
+
+    view
+    |> element("tr[data-issue='FIL-39'] button", "Logs")
+    |> render_click()
+
+    assert has_element?(view, "#log-drawer")
+    rendered = render(view)
+    assert rendered =~ "Engine"
+    assert rendered =~ "Codex"
+    assert rendered =~ "FIL-39"
+    assert rendered =~ "engine hello for drawer"
+    refute rendered =~ "issue_identifier=OTHER"
+
+    view
+    |> element("#log-drawer button", "Codex")
+    |> render_click()
+
+    assert render(view) =~ "codex drawer hello"
+
+    view
+    |> element("#log-drawer button", "Close")
+    |> render_click()
+
+    refute has_element?(view, "#log-drawer")
   end
 
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do

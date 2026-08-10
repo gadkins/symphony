@@ -99,7 +99,7 @@ defmodule SymphonyElixirWeb.Presenter do
     }
   end
 
-  defp logs_payload(issue_identifier, running, blocked, parked, retry \\ nil) do
+  defp logs_payload(issue_identifier, running, blocked, parked, retry) do
     session_id = session_id_from_entries(running, blocked, parked, retry)
     {codex_path, codex_tail} = codex_logs(session_id)
 
@@ -137,7 +137,7 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
-  defp session_id_from_entries(running, blocked, parked, retry \\ nil) do
+  defp session_id_from_entries(running, blocked, parked, retry) do
     (running && running.session_id) ||
       (blocked && blocked.session_id) ||
       (retry && Map.get(retry, :session_id)) ||

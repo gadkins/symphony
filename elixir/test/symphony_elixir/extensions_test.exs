@@ -5,6 +5,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.LiveViewTest
 
   alias SymphonyElixir.Linear.Adapter
+  alias SymphonyElixir.ParkedRuns
   alias SymphonyElixir.Tracker.Memory
 
   @endpoint SymphonyElixirWeb.Endpoint
@@ -320,6 +321,10 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do
+    %{log_file: log_file, sessions_root: sessions_root} = isolate_parked_runs_and_logs!()
+
+    File.write!(log_file, "info issue_identifier=MT-HTTP engine line one\n")
+
     snapshot = static_snapshot()
     orchestrator_name = Module.concat(__MODULE__, :ObservabilityApiOrchestrator)
 
@@ -388,6 +393,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_event_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("last_event_at")
                }
              ],
+             "parked" => [],
              "codex_totals" => %{
                "input_tokens" => 4,
                "output_tokens" => 8,
@@ -423,7 +429,14 @@ defmodule SymphonyElixir.ExtensionsTest do
              },
              "retry" => nil,
              "blocked" => nil,
-             "logs" => %{"codex_session_logs" => []},
+             "logs" => %{
+               "session_id" => "thread-http",
+               "parked" => false,
+               "engine_match_key" => "issue_identifier=MT-HTTP",
+               "codex_path" => nil,
+               "engine_tail" => ["info issue_identifier=MT-HTTP engine line one"],
+               "codex_tail" => []
+             },
              "recent_events" => [],
              "last_error" => nil,
              "tracked" => %{}
@@ -445,6 +458,55 @@ defmodule SymphonyElixir.ExtensionsTest do
                "error" => "codex turn requires operator input"
              }
            } = json_response(conn, 200)
+
+    ParkedRuns.upsert(%{
+      issue_identifier: "MT-PARKED",
+      session_id: "sess-parked",
+      workspace_path: "/workspaces/MT-PARKED",
+      linear_state: "Human Review"
+    })
+
+    session_path =
+      Path.join(sessions_root, "2026/08/10/rollout-2026-08-10T00-00-00-sess-parked.jsonl")
+
+    File.mkdir_p!(Path.dirname(session_path))
+
+    File.write!(
+      session_path,
+      Jason.encode!(%{
+        "type" => "event_msg",
+        "payload" => %{"type" => "agent_message", "message" => "parked hello"}
+      }) <> "\n"
+    )
+
+    state_with_parked = json_response(get(build_conn(), "/api/v1/state"), 200)
+
+    assert [
+             %{
+               "issue_identifier" => "MT-PARKED",
+               "session_id" => "sess-parked",
+               "workspace_path" => "/workspaces/MT-PARKED",
+               "linear_state" => "Human Review",
+               "parked_at" => parked_at
+             }
+           ] = state_with_parked["parked"]
+
+    assert is_binary(parked_at)
+
+    parked_issue = json_response(get(build_conn(), "/api/v1/MT-PARKED"), 200)
+
+    assert parked_issue["status"] == "parked"
+    assert parked_issue["issue_identifier"] == "MT-PARKED"
+    assert parked_issue["workspace"]["path"] == "/workspaces/MT-PARKED"
+
+    assert parked_issue["logs"] == %{
+             "session_id" => "sess-parked",
+             "parked" => true,
+             "engine_match_key" => "issue_identifier=MT-PARKED",
+             "codex_path" => session_path,
+             "engine_tail" => [],
+             "codex_tail" => ["[message] parked hello"]
+           }
 
     conn = get(build_conn(), "/api/v1/MT-MISSING")
 
@@ -719,6 +781,57 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert method_not_allowed_response.body["error"]["code"] == "method_not_allowed"
 
     assert {:error, _reason} = HttpServer.start_link(host: "bad host", port: 0)
+  end
+
+  defp isolate_parked_runs_and_logs! do
+    tmp = Path.join(System.tmp_dir!(), "api-presenter-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+    log_file = Path.join(tmp, "symphony.log")
+    File.write!(log_file, "")
+    sessions_root = Path.join(tmp, "sessions")
+    File.mkdir_p!(sessions_root)
+
+    previous_log_file = Application.get_env(:symphony_elixir, :log_file)
+    previous_sessions_root = Application.get_env(:symphony_elixir, :codex_sessions_root)
+    Application.put_env(:symphony_elixir, :log_file, log_file)
+    Application.put_env(:symphony_elixir, :codex_sessions_root, sessions_root)
+
+    stop_application_parked_runs()
+    start_supervised!({ParkedRuns, []})
+
+    on_exit(fn ->
+      if pid = Process.whereis(ParkedRuns), do: GenServer.stop(pid)
+
+      if is_nil(previous_log_file) do
+        Application.delete_env(:symphony_elixir, :log_file)
+      else
+        Application.put_env(:symphony_elixir, :log_file, previous_log_file)
+      end
+
+      if is_nil(previous_sessions_root) do
+        Application.delete_env(:symphony_elixir, :codex_sessions_root)
+      else
+        Application.put_env(:symphony_elixir, :codex_sessions_root, previous_sessions_root)
+      end
+
+      restart_application_parked_runs()
+    end)
+
+    %{log_file: log_file, sessions_root: sessions_root}
+  end
+
+  defp stop_application_parked_runs do
+    if Process.whereis(ParkedRuns) do
+      :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, ParkedRuns)
+    end
+  end
+
+  defp restart_application_parked_runs do
+    case Supervisor.restart_child(SymphonyElixir.Supervisor, ParkedRuns) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+      other -> raise "failed to restart ParkedRuns: #{inspect(other)}"
+    end
   end
 
   defp start_test_endpoint(overrides) do

@@ -13,11 +13,12 @@ defmodule SymphonyElixir.EngineLogTailer do
     log_file = log_file(opts)
     max_lines = Keyword.get(opts, :max_lines, @default_max_lines)
     max_files = Application.get_env(:symphony_elixir, :log_file_max_files, @default_max_files)
+    pattern = issue_pattern(issue_identifier)
 
     log_file
     |> rotated_files(max_files)
     |> Enum.flat_map(&read_lines/1)
-    |> Enum.filter(&matches_issue?(&1, issue_identifier))
+    |> Enum.filter(&matches_issue?(&1, pattern))
     |> Enum.take(-max_lines)
   end
 
@@ -40,6 +41,8 @@ defmodule SymphonyElixir.EngineLogTailer do
 
   @spec poll(map()) :: {[String.t()], map()}
   def poll(%{path: path, offset: offset, issue_identifier: issue_identifier, partial: partial} = state) do
+    pattern = issue_pattern(issue_identifier)
+
     case File.open(path, [:read, :binary]) do
       {:ok, file} ->
         try do
@@ -55,7 +58,7 @@ defmodule SymphonyElixir.EngineLogTailer do
 
           lines =
             complete
-            |> Enum.filter(&matches_issue?(&1, issue_identifier))
+            |> Enum.filter(&matches_issue?(&1, pattern))
 
           {lines, %{state | offset: new_offset, partial: remainder}}
         after
@@ -67,9 +70,12 @@ defmodule SymphonyElixir.EngineLogTailer do
     end
   end
 
-  defp matches_issue?(line, issue_identifier) do
+  defp issue_pattern(issue_identifier) do
     ~r/issue_identifier=#{Regex.escape(issue_identifier)}(\s|$)/
-    |> Regex.match?(line)
+  end
+
+  defp matches_issue?(line, %Regex{} = pattern) do
+    Regex.match?(pattern, line)
   end
 
   defp rotated_files(log_file, max_files) do

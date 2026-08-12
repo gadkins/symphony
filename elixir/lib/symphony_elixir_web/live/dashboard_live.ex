@@ -204,15 +204,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
-                        <button
-                          type="button"
-                          class="subtle-button"
-                          phx-click="open_drawer"
-                          phx-value-issue_identifier={entry.issue_identifier}
-                        >
-                          Logs
-                        </button>
-                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                        <div class="issue-actions">
+                          <button
+                            type="button"
+                            class="issue-link"
+                            phx-click="open_drawer"
+                            phx-value-issue_identifier={entry.issue_identifier}
+                          >
+                            Logs
+                          </button>
+                          <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                        </div>
                       </div>
                     </td>
                     <td>
@@ -293,15 +295,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
-                        <button
-                          type="button"
-                          class="subtle-button"
-                          phx-click="open_drawer"
-                          phx-value-issue_identifier={entry.issue_identifier}
-                        >
-                          Logs
-                        </button>
-                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                        <div class="issue-actions">
+                          <button
+                            type="button"
+                            class="issue-link"
+                            phx-click="open_drawer"
+                            phx-value-issue_identifier={entry.issue_identifier}
+                          >
+                            Logs
+                          </button>
+                          <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                        </div>
                       </div>
                     </td>
                     <td>
@@ -371,15 +375,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <td>
                     <div class="issue-stack">
                       <span class="issue-id"><%= entry.issue_identifier %></span>
-                      <button
-                        type="button"
-                        class="subtle-button"
-                        phx-click="open_drawer"
-                        phx-value-issue_identifier={entry.issue_identifier}
-                      >
-                        Logs
-                      </button>
-                      <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                      <div class="issue-actions">
+                        <button
+                          type="button"
+                          class="issue-link"
+                          phx-click="open_drawer"
+                          phx-value-issue_identifier={entry.issue_identifier}
+                        >
+                          Logs
+                        </button>
+                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                      </div>
                     </div>
                   </td>
                   <td>
@@ -436,15 +442,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
-                        <button
-                          type="button"
-                          class="subtle-button"
-                          phx-click="open_drawer"
-                          phx-value-issue_identifier={entry.issue_identifier}
-                        >
-                          Logs
-                        </button>
-                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                        <div class="issue-actions">
+                          <button
+                            type="button"
+                            class="issue-link"
+                            phx-click="open_drawer"
+                            phx-value-issue_identifier={entry.issue_identifier}
+                          >
+                            Logs
+                          </button>
+                          <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                        </div>
                       </div>
                     </td>
                     <td><%= entry.attempt %></td>

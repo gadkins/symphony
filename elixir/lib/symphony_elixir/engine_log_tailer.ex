@@ -24,15 +24,18 @@ defmodule SymphonyElixir.EngineLogTailer do
 
   @spec follow_state(String.t(), keyword()) :: %{
           path: String.t(),
+          base_path: String.t(),
           offset: non_neg_integer(),
           issue_identifier: String.t(),
           partial: String.t()
         }
   def follow_state(issue_identifier, opts \\ []) when is_binary(issue_identifier) do
-    path = log_file(opts)
+    base_path = log_file(opts)
+    path = active_log_path(base_path)
 
     %{
       path: path,
+      base_path: base_path,
       offset: file_size(path),
       issue_identifier: issue_identifier,
       partial: ""
@@ -40,20 +43,39 @@ defmodule SymphonyElixir.EngineLogTailer do
   end
 
   @spec poll(map()) :: {[String.t()], map()}
-  def poll(%{path: path, offset: offset, issue_identifier: issue_identifier, partial: partial} = state) do
+  def poll(%{issue_identifier: issue_identifier} = state) do
     pattern = issue_pattern(issue_identifier)
+    base_path = Map.get(state, :base_path, state.path)
+    active = active_log_path(base_path)
+
+    {drained, state} = drain_if_rotated(state, active, pattern)
+    {lines, state} = read_matching(state, pattern)
+    {drained ++ lines, state}
+  end
+
+  defp drain_if_rotated(%{path: path} = state, active, pattern) when path != active do
+    {lines, _stale} = read_matching(state, pattern)
+    {lines, %{state | path: active, offset: 0, partial: ""}}
+  end
+
+  defp drain_if_rotated(state, _active, _pattern), do: {[], state}
+
+  defp read_matching(%{path: path, offset: offset, partial: partial} = state, pattern) do
+    size = file_size(path)
+    offset = if size < offset, do: 0, else: offset
 
     case File.open(path, [:read, :binary]) do
       {:ok, file} ->
         try do
-          {:ok, ^offset} = :file.position(file, offset)
+          {:ok, _} = :file.position(file, offset)
+
           chunk =
             case IO.binread(file, :eof) do
               :eof -> ""
               data when is_binary(data) -> data
             end
-          {:ok, new_offset} = :file.position(file, :cur)
 
+          {:ok, new_offset} = :file.position(file, :cur)
           {complete, remainder} = split_with_partial(partial <> chunk)
 
           lines =
@@ -79,12 +101,36 @@ defmodule SymphonyElixir.EngineLogTailer do
   end
 
   defp rotated_files(log_file, max_files) do
-    rotated =
-      max_files..1//-1
-      |> Enum.map(&"#{log_file}.#{&1}")
-      |> Enum.filter(&File.regular?/1)
+    wrap =
+      log_file
+      |> wrap_segments(max_files)
+      |> Enum.sort_by(fn {path, n} -> {file_mtime(path), n} end)
+      |> Enum.map(&elem(&1, 0))
 
-    rotated ++ [log_file]
+    if File.regular?(log_file) do
+      wrap ++ [log_file]
+    else
+      wrap
+    end
+  end
+
+  defp active_log_path(log_file) do
+    max_files = Application.get_env(:symphony_elixir, :log_file_max_files, @default_max_files)
+
+    case wrap_segments(log_file, max_files) do
+      [] ->
+        log_file
+
+      segments ->
+        {path, _} = Enum.max_by(segments, fn {path, n} -> {file_mtime(path), n} end)
+        path
+    end
+  end
+
+  defp wrap_segments(log_file, max_files) do
+    1..max_files
+    |> Enum.map(fn n -> {"#{log_file}.#{n}", n} end)
+    |> Enum.filter(fn {path, _} -> File.regular?(path) end)
   end
 
   defp read_lines(path) do
@@ -131,6 +177,13 @@ defmodule SymphonyElixir.EngineLogTailer do
   defp file_size(path) do
     case File.stat(path) do
       {:ok, %{size: size}} -> size
+      {:error, _} -> 0
+    end
+  end
+
+  defp file_mtime(path) do
+    case File.stat(path, time: :posix) do
+      {:ok, %{mtime: mtime}} -> mtime
       {:error, _} -> 0
     end
   end

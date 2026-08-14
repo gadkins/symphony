@@ -75,6 +75,44 @@ defmodule SymphonyElixir.EngineLogTailerTest do
            ]
   end
 
+  test "initial_lines reads OTP wrap segments when symphony.log is absent", %{tmp: tmp} do
+    log = Path.join(tmp, "symphony.log")
+    File.write!("#{log}.3", "info: wrap issue_identifier=FIL-39 from-wrap\n")
+
+    lines = EngineLogTailer.initial_lines("FIL-39", log_file: log)
+    assert lines == ["info: wrap issue_identifier=FIL-39 from-wrap"]
+  end
+
+  test "poll follows the current wrap segment instead of missing symphony.log", %{tmp: tmp} do
+    log = Path.join(tmp, "symphony.log")
+    wrap = "#{log}.3"
+    File.write!(wrap, "info: start issue_identifier=FIL-39\n")
+
+    state = EngineLogTailer.follow_state("FIL-39", log_file: log)
+    assert state.path == wrap
+
+    File.write!(wrap, "info: live issue_identifier=FIL-39\n", [:append])
+
+    {lines, new_state} = EngineLogTailer.poll(state)
+    assert lines == ["info: live issue_identifier=FIL-39"]
+    assert new_state.path == wrap
+    assert new_state.offset > state.offset
+  end
+
+  test "poll switches to a newer wrap segment after rotation", %{tmp: tmp} do
+    log = Path.join(tmp, "symphony.log")
+    wrap3 = "#{log}.3"
+    wrap4 = "#{log}.4"
+    File.write!(wrap3, "info: start issue_identifier=FIL-39\n")
+
+    state = EngineLogTailer.follow_state("FIL-39", log_file: log)
+    File.write!(wrap4, "info: after-wrap issue_identifier=FIL-39\n")
+
+    {lines, new_state} = EngineLogTailer.poll(state)
+    assert lines == ["info: after-wrap issue_identifier=FIL-39"]
+    assert new_state.path == wrap4
+  end
+
   defp write_log!(tmp, lines) do
     log = Path.join(tmp, "symphony.log")
     File.write!(log, IO.iodata_to_binary(lines))

@@ -620,6 +620,33 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp maybe_poll_log_tails(%{assigns: %{drawer_issue: nil}} = socket), do: socket
 
   defp maybe_poll_log_tails(socket) do
+    socket
+    |> maybe_attach_codex_follow()
+    |> poll_log_follows()
+  end
+
+  defp maybe_attach_codex_follow(%{assigns: %{codex_follow: nil, drawer_issue: issue}} = socket)
+       when not is_nil(issue) do
+    meta = resolve_issue_meta(socket.assigns.payload, issue.issue_identifier)
+    opts = codex_sessions_opts()
+
+    case CodexSessionTailer.resolve_path(meta.session_id, opts) do
+      {:ok, path} ->
+        lines = CodexSessionTailer.readable_lines(path, opts)
+
+        socket
+        |> assign(:drawer_issue, Map.put(issue, :session_id, meta.session_id))
+        |> assign(:codex_lines, Enum.take(lines, -@log_buffer_max_lines))
+        |> assign(:codex_follow, CodexSessionTailer.follow_state(path))
+
+      {:error, _} ->
+        assign(socket, :drawer_issue, Map.put(issue, :session_id, meta.session_id))
+    end
+  end
+
+  defp maybe_attach_codex_follow(socket), do: socket
+
+  defp poll_log_follows(socket) do
     {engine_lines, engine_follow} =
       case socket.assigns.engine_follow do
         nil ->

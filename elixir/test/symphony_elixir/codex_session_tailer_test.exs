@@ -36,6 +36,24 @@ defmodule SymphonyElixir.CodexSessionTailerTest do
     assert {:ok, ^path} = CodexSessionTailer.resolve_path(@session_id, sessions_root: root)
   end
 
+  test "resolves rollout file from Symphony thread-turn session id", %{root: root} do
+    thread_id = "01a000bf-0cd9-7b00-9d5e-d7902d7a7790"
+    turn_id = "01a000bf-0d5e-7712-8e37-b1278e71476f"
+    session_id = "#{thread_id}-#{turn_id}"
+
+    path =
+      Path.join([
+        root,
+        "2026/08/14",
+        "rollout-2026-08-14T09-48-35-#{thread_id}.jsonl"
+      ])
+
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, "{}\n")
+
+    assert {:ok, ^path} = CodexSessionTailer.resolve_path(session_id, sessions_root: root)
+  end
+
   test "readable_lines extracts agent message text from jsonl", %{root: root} do
     path = write_session!(root, [
       Jason.encode!(%{
@@ -69,6 +87,53 @@ defmodule SymphonyElixir.CodexSessionTailerTest do
     assert lines == [
              "[message] Planning the implementation steps.",
              "[command] git status --short"
+           ]
+  end
+
+  test "readable_lines surfaces reasoning, tools, and command output", %{root: root} do
+    path =
+      write_session!(root, [
+        Jason.encode!(%{
+          "type" => "response_item",
+          "payload" => %{
+            "type" => "reasoning",
+            "id" => "rs_020c455b4abcd"
+          }
+        }),
+        Jason.encode!(%{
+          "type" => "response_item",
+          "payload" => %{
+            "type" => "function_call",
+            "id" => "fc_01170a31dd3e",
+            "name" => "wait"
+          }
+        }),
+        Jason.encode!(%{
+          "type" => "response_item",
+          "payload" => %{
+            "type" => "custom_tool_call_output",
+            "output" => [
+              %{"type" => "input_text", "text" => "> @filos/contract@1.0.0 build > tsc -p tsconfig.json\n"}
+            ]
+          }
+        }),
+        Jason.encode!(%{
+          "type" => "event_msg",
+          "payload" => %{
+            "type" => "sub_agent_activity",
+            "kind" => "started",
+            "agent_path" => "/root/skill_product_mode"
+          }
+        })
+      ])
+
+    lines = CodexSessionTailer.readable_lines(path)
+
+    assert lines == [
+             "item started: reasoning (rs_020c455b4)",
+             "item started: wait (fc_01170a31d)",
+             "command output streaming: > @filos/contract@1.0.0 build > tsc -p tsconfig.json",
+             "[sub-agent] started /root/skill_product_mode"
            ]
   end
 

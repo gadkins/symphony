@@ -1584,10 +1584,13 @@ defmodule SymphonyElixir.Orchestrator do
     last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
 
+    summarized = summarize_codex_update(update)
+    log_codex_activity(running_entry, summarized)
+
     {
       Map.merge(running_entry, %{
         last_codex_timestamp: timestamp,
-        last_codex_message: summarize_codex_update(update),
+        last_codex_message: summarized,
         session_id: session_id_for_update(running_entry.session_id, update),
         last_codex_event: event,
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
@@ -1645,6 +1648,26 @@ defmodule SymphonyElixir.Orchestrator do
       message: update[:payload] || update[:raw],
       timestamp: update[:timestamp]
     }
+  end
+
+  defp log_codex_activity(%{identifier: identifier} = entry, summary) when is_binary(identifier) do
+    text = StatusDashboard.humanize_codex_message(summary)
+
+    if persist_codex_activity?(text) do
+      issue_id = Map.get(entry, :issue_id) || "n/a"
+      Logger.info("Codex activity for issue_id=#{issue_id} issue_identifier=#{identifier} #{text}")
+    end
+  end
+
+  defp log_codex_activity(_entry, _summary), do: :ok
+
+  defp persist_codex_activity?(text) when is_binary(text) do
+    cond do
+      text in ["", "no codex message yet"] -> false
+      String.starts_with?(text, "token count") -> false
+      String.starts_with?(text, "thread token usage") -> false
+      true -> true
+    end
   end
 
   defp schedule_tick(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do

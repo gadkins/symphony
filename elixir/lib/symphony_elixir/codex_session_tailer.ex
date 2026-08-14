@@ -96,9 +96,24 @@ defmodule SymphonyElixir.CodexSessionTailer do
     end
   end
 
+  @thread_turn ~r/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/
+
   defp find_session_file(root, session_id) do
+    session_id
+    |> lookup_ids()
+    |> Enum.find_value(&newest_match(root, &1))
+  end
+
+  defp lookup_ids(session_id) do
+    case Regex.run(@thread_turn, session_id) do
+      [_, thread_id, _turn_id] -> [session_id, thread_id]
+      _ -> [session_id]
+    end
+  end
+
+  defp newest_match(root, id) do
     root
-    |> Path.join("**/*#{session_id}*")
+    |> Path.join("**/*#{id}*")
     |> Path.wildcard()
     |> Enum.filter(&File.regular?/1)
     |> Enum.sort_by(&file_mtime/1, :desc)
@@ -143,17 +158,28 @@ defmodule SymphonyElixir.CodexSessionTailer do
 
   defp readable_from_payload(%{"type" => "agent_message", "message" => message})
        when is_binary(message) and message != "" do
-    "[message] #{message}"
+    "[message] #{truncate_raw(inline_text(message))}"
   end
 
   defp readable_from_payload(%{"type" => "user_message", "message" => message})
        when is_binary(message) and message != "" do
-    "[message] user: #{message}"
+    "[message] user: #{truncate_raw(inline_text(message))}"
   end
 
   defp readable_from_payload(%{"type" => "patch_apply_end", "success" => success}) do
     status = if success, do: "succeeded", else: "failed"
     "[command] patch apply #{status}"
+  end
+
+  defp readable_from_payload(%{"type" => "sub_agent_activity"} = payload) do
+    kind = payload["kind"] || "updated"
+    path = payload["agent_path"]
+
+    if is_binary(path) and path != "" do
+      "[sub-agent] #{kind} #{path}"
+    else
+      "[sub-agent] #{kind}"
+    end
   end
 
   defp readable_from_payload(%{"type" => "token_count"}), do: nil
@@ -176,15 +202,70 @@ defmodule SymphonyElixir.CodexSessionTailer do
        when is_list(content) do
     case extract_message_text(content) do
       nil -> nil
-      text -> "[message] #{text}"
+      text -> "[message] #{truncate_raw(inline_text(text))}"
     end
   end
 
-  defp readable_from_response_item(%{"type" => "reasoning"}), do: nil
-  defp readable_from_response_item(%{"type" => "custom_tool_call_output"}), do: nil
-  defp readable_from_response_item(%{"type" => "function_call"}), do: nil
-  defp readable_from_response_item(%{"type" => "function_call_output"}), do: nil
+  defp readable_from_response_item(%{"type" => "reasoning"} = payload) do
+    item_started("reasoning", payload["id"])
+  end
+
+  defp readable_from_response_item(%{"type" => "function_call"} = payload) do
+    item_started(payload["name"] || "function_call", payload["id"])
+  end
+
+  defp readable_from_response_item(%{"type" => "custom_tool_call_output", "output" => output}) do
+    case extract_output_text(output) do
+      nil -> nil
+      text -> "command output streaming: #{text}"
+    end
+  end
+
+  defp readable_from_response_item(%{"type" => "function_call_output", "output" => output})
+       when is_binary(output) and output != "" do
+    "command output streaming: #{inline_text(output)}"
+  end
+
   defp readable_from_response_item(_payload), do: nil
+
+  defp item_started(type, id) do
+    case short_id(id) do
+      nil -> "item started: #{type}"
+      sid -> "item started: #{type} (#{sid})"
+    end
+  end
+
+  defp short_id(id) when is_binary(id) and byte_size(id) > 12, do: String.slice(id, 0, 12)
+  defp short_id(id) when is_binary(id) and id != "", do: id
+  defp short_id(_id), do: nil
+
+  defp extract_output_text(output) when is_list(output) do
+    output
+    |> Enum.flat_map(fn
+      %{"text" => text} when is_binary(text) -> [text]
+      text when is_binary(text) -> [text]
+      _ -> []
+    end)
+    |> Enum.join("")
+    |> inline_text()
+    |> case do
+      "" -> nil
+      text -> text
+    end
+  end
+
+  defp extract_output_text(output) when is_binary(output) and output != "" do
+    inline_text(output)
+  end
+
+  defp extract_output_text(_output), do: nil
+
+  defp inline_text(text) when is_binary(text) do
+    text
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+    |> truncate_raw()
+  end
 
   defp extract_exec_command(input) do
     case Regex.run(@exec_cmd_pattern, input, capture: :all_but_first) do

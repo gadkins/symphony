@@ -517,7 +517,7 @@ defmodule SymphonyElixir.AppServerTest do
                    |> String.trim_leading("JSON:")
                    |> Jason.decode!()
 
-                 payload["id"] == 99 and get_in(payload, ["result", "decision"]) == "acceptForSession"
+                 payload["id"] == 99 and get_in(payload, ["result", "decision"]) == "accept"
                else
                  false
                end

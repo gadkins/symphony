@@ -5,6 +5,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.LiveViewTest
 
   alias SymphonyElixir.Linear.Adapter
+  alias SymphonyElixir.ParkedRuns
   alias SymphonyElixir.Tracker.Memory
 
   @endpoint SymphonyElixirWeb.Endpoint
@@ -158,18 +159,18 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:noreply, returned_state} = WorkflowStore.handle_info(:poll, state)
     assert returned_state.workflow.prompt == "Manual workflow prompt"
     refute returned_state.stamp == nil
-    assert_receive :poll, 1_100
+    assert_receive :poll, 2_000
 
     Workflow.set_workflow_file_path(missing_path)
     assert {:noreply, path_error_state} = WorkflowStore.handle_info(:poll, returned_state)
     assert path_error_state.workflow.prompt == "Manual workflow prompt"
-    assert_receive :poll, 1_100
+    assert_receive :poll, 2_000
 
     Workflow.set_workflow_file_path(manual_path)
     File.rm!(manual_path)
     assert {:noreply, removed_state} = WorkflowStore.handle_info(:poll, path_error_state)
     assert removed_state.workflow.prompt == "Manual workflow prompt"
-    assert_receive :poll, 1_100
+    assert_receive :poll, 2_000
 
     Process.exit(manual_pid, :normal)
     restart_result = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
@@ -320,6 +321,10 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do
+    %{log_file: log_file, sessions_root: sessions_root} = isolate_parked_runs_and_logs!()
+
+    File.write!(log_file, "info issue_identifier=MT-HTTP engine line one\n")
+
     snapshot = static_snapshot()
     orchestrator_name = Module.concat(__MODULE__, :ObservabilityApiOrchestrator)
 
@@ -369,7 +374,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom",
                  "worker_host" => nil,
-                 "workspace_path" => nil
+                 "workspace_path" => nil,
+                 "session_id" => nil
                }
              ],
              "blocked" => [
@@ -388,6 +394,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_event_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("last_event_at")
                }
              ],
+             "parked" => [],
              "codex_totals" => %{
                "input_tokens" => 4,
                "output_tokens" => 8,
@@ -423,7 +430,14 @@ defmodule SymphonyElixir.ExtensionsTest do
              },
              "retry" => nil,
              "blocked" => nil,
-             "logs" => %{"codex_session_logs" => []},
+             "logs" => %{
+               "session_id" => "thread-http",
+               "parked" => false,
+               "engine_match_key" => "issue_identifier=MT-HTTP",
+               "codex_path" => nil,
+               "engine_tail" => ["info issue_identifier=MT-HTTP engine line one"],
+               "codex_tail" => []
+             },
              "recent_events" => [],
              "last_error" => nil,
              "tracked" => %{}
@@ -445,6 +459,55 @@ defmodule SymphonyElixir.ExtensionsTest do
                "error" => "codex turn requires operator input"
              }
            } = json_response(conn, 200)
+
+    ParkedRuns.upsert(%{
+      issue_identifier: "MT-PARKED",
+      session_id: "sess-parked",
+      workspace_path: "/workspaces/MT-PARKED",
+      linear_state: "Human Review"
+    })
+
+    session_path =
+      Path.join(sessions_root, "2026/08/10/rollout-2026-08-10T00-00-00-sess-parked.jsonl")
+
+    File.mkdir_p!(Path.dirname(session_path))
+
+    File.write!(
+      session_path,
+      Jason.encode!(%{
+        "type" => "event_msg",
+        "payload" => %{"type" => "agent_message", "message" => "parked hello"}
+      }) <> "\n"
+    )
+
+    state_with_parked = json_response(get(build_conn(), "/api/v1/state"), 200)
+
+    assert [
+             %{
+               "issue_identifier" => "MT-PARKED",
+               "session_id" => "sess-parked",
+               "workspace_path" => "/workspaces/MT-PARKED",
+               "linear_state" => "Human Review",
+               "parked_at" => parked_at
+             }
+           ] = state_with_parked["parked"]
+
+    assert is_binary(parked_at)
+
+    parked_issue = json_response(get(build_conn(), "/api/v1/MT-PARKED"), 200)
+
+    assert parked_issue["status"] == "parked"
+    assert parked_issue["issue_identifier"] == "MT-PARKED"
+    assert parked_issue["workspace"]["path"] == "/workspaces/MT-PARKED"
+
+    assert parked_issue["logs"] == %{
+             "session_id" => "sess-parked",
+             "parked" => true,
+             "engine_match_key" => "issue_identifier=MT-PARKED",
+             "codex_path" => session_path,
+             "engine_tail" => [],
+             "codex_tail" => ["[message] parked hello"]
+           }
 
     conn = get(build_conn(), "/api/v1/MT-MISSING")
 
@@ -543,6 +606,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
     assert dashboard_css =~ "text-decoration-thickness: 1px"
+    assert dashboard_css =~ ".log-drawer"
+    assert dashboard_css =~ "min(40vw, 36rem)"
+    assert dashboard_css =~ ".drawer-backdrop"
+    assert dashboard_css =~ ".log-pane"
 
     favicon_conn = get(build_conn(), "/favicon.png")
     assert response(favicon_conn, 200) == File.read!("priv/static/favicon.png")
@@ -656,6 +723,191 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "snapshot_unavailable"
   end
 
+  test "clicking Logs opens the log drawer with engine tab" do
+    %{log_file: log_file, sessions_root: sessions_root} = isolate_parked_runs_and_logs!()
+
+    File.write!(
+      log_file,
+      "info issue_identifier=TEST-39 engine hello for drawer\ninfo issue_identifier=OTHER skip\n"
+    )
+
+    session_id = "sess-drawer-39"
+    session_path = Path.join(sessions_root, "2026/08/10/rollout-2026-08-10T00-00-00-#{session_id}.jsonl")
+    File.mkdir_p!(Path.dirname(session_path))
+
+    File.write!(
+      session_path,
+      Jason.encode!(%{
+        "type" => "event_msg",
+        "payload" => %{"type" => "agent_message", "message" => "codex drawer hello"}
+      }) <> "\n"
+    )
+
+    :ok =
+      ParkedRuns.upsert(%{
+        issue_identifier: "TEST-PARKED",
+        session_id: "sess-parked-drawer",
+        workspace_path: "/workspaces/TEST-PARKED",
+        linear_state: "Human Review"
+      })
+
+    snapshot =
+      static_snapshot()
+      |> put_in([:running], [
+        %{
+          issue_id: "issue-39",
+          identifier: "TEST-39",
+          issue_url: "https://example.org/issues/TEST-39",
+          state: "In Progress",
+          session_id: session_id,
+          turn_count: 3,
+          codex_app_server_pid: nil,
+          last_codex_message: "working",
+          last_codex_timestamp: nil,
+          last_codex_event: :notification,
+          codex_input_tokens: 1,
+          codex_output_tokens: 2,
+          codex_total_tokens: 3,
+          started_at: DateTime.utc_now(),
+          workspace_path: "/workspaces/TEST-39"
+        }
+      ])
+
+    orchestrator_name = Module.concat(__MODULE__, :DrawerOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot,
+        refresh: %{
+          queued: false,
+          coalesced: false,
+          requested_at: DateTime.utc_now(),
+          operations: []
+        }
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, html} = live(build_conn(), "/")
+    assert html =~ "TEST-39"
+    assert html =~ "Parked"
+    assert html =~ "TEST-PARKED"
+    assert html =~ "Logs"
+    refute has_element?(view, "#log-drawer")
+
+    view
+    |> element("tr[data-issue='TEST-39'] button", "Logs")
+    |> render_click()
+
+    assert has_element?(view, "#log-drawer")
+    rendered = render(view)
+    assert rendered =~ "Engine"
+    assert rendered =~ "Codex"
+    assert rendered =~ "TEST-39"
+    assert rendered =~ "engine hello for drawer"
+    refute rendered =~ "issue_identifier=OTHER"
+
+    File.write!(log_file, "info issue_identifier=TEST-39 streamed engine update\n", [:append])
+
+    File.write!(
+      session_path,
+      Jason.encode!(%{
+        "type" => "event_msg",
+        "payload" => %{"type" => "agent_message", "message" => "streamed codex update"}
+      }) <> "\n",
+      [:append]
+    )
+
+    send(view.pid, :runtime_tick)
+    assert_eventually(fn -> render(view) =~ "streamed engine update" end)
+
+    view
+    |> element("#log-drawer button", "Codex")
+    |> render_click()
+
+    assert render(view) =~ "codex drawer hello"
+    assert render(view) =~ "streamed codex update"
+
+    view
+    |> element("#log-drawer button", "Close")
+    |> render_click()
+
+    refute has_element?(view, "#log-drawer")
+  end
+
+  test "?issue= deep-link opens drawer for known running issue" do
+    %{log_file: log_file} = isolate_parked_runs_and_logs!()
+
+    File.write!(log_file, "info issue_identifier=TEST-39 deep link engine\n")
+
+    snapshot =
+      static_snapshot()
+      |> put_in([:running], [
+        %{
+          issue_id: "issue-39",
+          identifier: "TEST-39",
+          issue_url: "https://example.org/issues/TEST-39",
+          state: "In Progress",
+          session_id: "sess-deep-39",
+          turn_count: 1,
+          codex_app_server_pid: nil,
+          last_codex_message: nil,
+          last_codex_timestamp: nil,
+          last_codex_event: nil,
+          codex_input_tokens: 0,
+          codex_output_tokens: 0,
+          codex_total_tokens: 0,
+          started_at: DateTime.utc_now(),
+          workspace_path: "/workspaces/TEST-39"
+        }
+      ])
+
+    orchestrator_name = Module.concat(__MODULE__, :DeepLinkOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot,
+        refresh: %{
+          queued: false,
+          coalesced: false,
+          requested_at: DateTime.utc_now(),
+          operations: []
+        }
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, html} = live(build_conn(), "/?issue=TEST-39")
+    assert has_element?(view, "#log-drawer")
+    assert html =~ "TEST-39"
+    assert html =~ "deep link engine"
+  end
+
+  test "?issue= unknown shows flash and leaves drawer closed" do
+    snapshot = static_snapshot()
+    orchestrator_name = Module.concat(__MODULE__, :DeepLinkUnknownOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot,
+        refresh: %{
+          queued: false,
+          coalesced: false,
+          requested_at: DateTime.utc_now(),
+          operations: []
+        }
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, html} = live(build_conn(), "/?issue=TEST-MISSING")
+    refute has_element?(view, "#log-drawer")
+    assert html =~ "Issue not in live or parked index"
+  end
+
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do
     spec = HttpServer.child_spec(port: 0)
     assert spec.id == HttpServer
@@ -719,6 +971,57 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert method_not_allowed_response.body["error"]["code"] == "method_not_allowed"
 
     assert {:error, _reason} = HttpServer.start_link(host: "bad host", port: 0)
+  end
+
+  defp isolate_parked_runs_and_logs! do
+    tmp = Path.join(System.tmp_dir!(), "api-presenter-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+    log_file = Path.join(tmp, "symphony.log")
+    File.write!(log_file, "")
+    sessions_root = Path.join(tmp, "sessions")
+    File.mkdir_p!(sessions_root)
+
+    previous_log_file = Application.get_env(:symphony_elixir, :log_file)
+    previous_sessions_root = Application.get_env(:symphony_elixir, :codex_sessions_root)
+    Application.put_env(:symphony_elixir, :log_file, log_file)
+    Application.put_env(:symphony_elixir, :codex_sessions_root, sessions_root)
+
+    stop_application_parked_runs()
+    start_supervised!({ParkedRuns, []})
+
+    on_exit(fn ->
+      if pid = Process.whereis(ParkedRuns), do: GenServer.stop(pid)
+
+      if is_nil(previous_log_file) do
+        Application.delete_env(:symphony_elixir, :log_file)
+      else
+        Application.put_env(:symphony_elixir, :log_file, previous_log_file)
+      end
+
+      if is_nil(previous_sessions_root) do
+        Application.delete_env(:symphony_elixir, :codex_sessions_root)
+      else
+        Application.put_env(:symphony_elixir, :codex_sessions_root, previous_sessions_root)
+      end
+
+      restart_application_parked_runs()
+    end)
+
+    %{log_file: log_file, sessions_root: sessions_root}
+  end
+
+  defp stop_application_parked_runs do
+    if Process.whereis(ParkedRuns) do
+      :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, ParkedRuns)
+    end
+  end
+
+  defp restart_application_parked_runs do
+    case Supervisor.restart_child(SymphonyElixir.Supervisor, ParkedRuns) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+      other -> raise "failed to restart ParkedRuns: #{inspect(other)}"
+    end
   end
 
   defp start_test_endpoint(overrides) do

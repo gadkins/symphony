@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, ParkedRuns, ParkedRunsHooks, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -209,6 +209,7 @@ defmodule SymphonyElixir.Orchestrator do
         identifier: running_entry.identifier,
         issue_url: running_entry.issue.url,
         delay_type: :continuation,
+        session_id: session_id,
         worker_host: Map.get(running_entry, :worker_host),
         workspace_path: Map.get(running_entry, :workspace_path)
       })
@@ -240,6 +241,7 @@ defmodule SymphonyElixir.Orchestrator do
       identifier: running_entry.identifier,
       issue_url: running_entry.issue.url,
       error: "agent exited: #{inspect(reason)}",
+      session_id: session_id,
       worker_host: Map.get(running_entry, :worker_host),
       workspace_path: Map.get(running_entry, :workspace_path)
     })
@@ -250,6 +252,8 @@ defmodule SymphonyElixir.Orchestrator do
       state
       |> reconcile_running_issues()
       |> reconcile_blocked_issues()
+
+    reconcile_parked_runs()
 
     with :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
@@ -415,11 +419,18 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
+        park_or_clear_running_issue(state, issue, :terminal)
         terminate_running_issue(state, issue.id, true)
+
+      !issue_routable?(issue) and active_issue_state?(issue.state, active_states) ->
+        Logger.info("Issue no longer routed to this worker while still active: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent without parking")
+
+        terminate_running_issue(state, issue.id, false)
 
       !issue_routable?(issue) ->
         Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
 
+        park_or_clear_running_issue(state, issue, :leave_active)
         terminate_running_issue(state, issue.id, false)
 
       active_issue_state?(issue.state, active_states) ->
@@ -428,6 +439,7 @@ defmodule SymphonyElixir.Orchestrator do
       true ->
         Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
+        park_or_clear_running_issue(state, issue, :leave_active)
         terminate_running_issue(state, issue.id, false)
     end
   end
@@ -450,10 +462,17 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Blocked issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; releasing block")
         cleanup_issue_workspace(issue.identifier, blocked_issue_worker_host(state, issue.id))
+        ParkedRunsHooks.on_terminal(issue.identifier)
+        release_issue_claim(state, issue.id)
+
+      !issue_routable?(issue) and active_issue_state?(issue.state, active_states) ->
+        Logger.info("Blocked issue no longer routed to this worker while still active: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; releasing block without parking")
+
         release_issue_claim(state, issue.id)
 
       !issue_routable?(issue) ->
         Logger.info("Blocked issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; releasing block")
+        park_blocked_issue(state, issue)
         release_issue_claim(state, issue.id)
 
       active_issue_state?(issue.state, active_states) ->
@@ -461,6 +480,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       true ->
         Logger.info("Blocked issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; releasing block")
+        park_blocked_issue(state, issue)
         release_issue_claim(state, issue.id)
     end
   end
@@ -571,6 +591,34 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp park_or_clear_running_issue(%State{} = _state, %Issue{} = issue, :terminal) do
+    ParkedRunsHooks.on_terminal(issue.identifier)
+  end
+
+  defp park_or_clear_running_issue(%State{} = state, %Issue{} = issue, :leave_active) do
+    case Map.get(state.running, issue.id) do
+      running_entry when is_map(running_entry) ->
+        ParkedRunsHooks.on_leave_active(
+          issue,
+          running_entry_session_id(running_entry),
+          Map.get(running_entry, :workspace_path)
+        )
+
+      _ ->
+        ParkedRunsHooks.on_leave_active(issue, nil, nil)
+    end
+  end
+
+  defp park_blocked_issue(%State{} = state, %Issue{} = issue) do
+    case Map.get(state.blocked, issue.id) do
+      %{session_id: session_id, workspace_path: workspace_path} ->
+        ParkedRunsHooks.on_leave_active(issue, session_id, workspace_path)
+
+      _ ->
+        ParkedRunsHooks.on_leave_active(issue, nil, nil)
+    end
+  end
+
   defp reconcile_stalled_running_issues(%State{} = state) do
     timeout_ms = Config.settings!().codex.stall_timeout_ms
 
@@ -623,7 +671,10 @@ defmodule SymphonyElixir.Orchestrator do
         |> schedule_issue_retry(issue_id, next_attempt, %{
           identifier: identifier,
           issue_url: running_entry.issue.url,
-          error: "stalled for #{elapsed_ms}ms without codex activity"
+          error: "stalled for #{elapsed_ms}ms without codex activity",
+          session_id: session_id,
+          worker_host: Map.get(running_entry, :worker_host),
+          workspace_path: Map.get(running_entry, :workspace_path)
         })
       end
     else
@@ -1033,6 +1084,7 @@ defmodule SymphonyElixir.Orchestrator do
     error = pick_retry_error(previous_retry, metadata)
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
+    session_id = pick_retry_session_id(previous_retry, metadata)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -1056,7 +1108,8 @@ defmodule SymphonyElixir.Orchestrator do
             issue_url: issue_url,
             error: error,
             worker_host: worker_host,
-            workspace_path: workspace_path
+            workspace_path: workspace_path,
+            session_id: session_id
           })
     }
   end
@@ -1069,7 +1122,8 @@ defmodule SymphonyElixir.Orchestrator do
           issue_url: Map.get(retry_entry, :issue_url),
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
-          workspace_path: Map.get(retry_entry, :workspace_path)
+          workspace_path: Map.get(retry_entry, :workspace_path),
+          session_id: Map.get(retry_entry, :session_id)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1080,7 +1134,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_retry_issue(%State{} = state, issue_id, attempt, metadata) do
-    case Tracker.fetch_candidate_issues() do
+    # Prefer id-based state fetch so Human Review / Merging (non-candidate) still resolve.
+    case Tracker.fetch_issue_states_by_ids([issue_id]) do
       {:ok, issues} ->
         issues
         |> find_issue_by_id(issue_id)
@@ -1101,20 +1156,31 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp handle_retry_issue_lookup(%Issue{} = issue, state, issue_id, attempt, metadata) do
     terminal_states = terminal_state_set()
+    active_states = active_state_set()
 
     cond do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
 
+        ParkedRunsHooks.on_terminal(issue.identifier)
         cleanup_issue_workspace(issue.identifier, metadata[:worker_host])
         {:noreply, release_issue_claim(state, issue_id)}
 
       retry_candidate_issue?(issue, terminal_states) ->
+        # Rework / still active: clear any stale parked entry before retrying.
+        ParkedRunsHooks.on_terminal(issue.identifier)
         handle_active_retry(state, issue, attempt, metadata)
 
-      true ->
-        Logger.debug("Issue left active states, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier}")
+      active_issue_state?(issue.state, active_states) ->
+        # Still active but not a retry candidate (e.g. unroutable) — do not park.
+        Logger.debug("Issue still active but not retryable, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier}")
 
+        {:noreply, release_issue_claim(state, issue_id)}
+
+      true ->
+        Logger.debug("Issue left active states, parking run issue_id=#{issue_id} issue_identifier=#{issue.identifier}")
+
+        ParkedRunsHooks.on_leave_active(issue, metadata[:session_id], metadata[:workspace_path])
         {:noreply, release_issue_claim(state, issue_id)}
     end
   end
@@ -1122,6 +1188,37 @@ defmodule SymphonyElixir.Orchestrator do
   defp handle_retry_issue_lookup(nil, state, issue_id, _attempt, _metadata) do
     Logger.debug("Issue no longer visible, removing claim issue_id=#{issue_id}")
     {:noreply, release_issue_claim(state, issue_id)}
+  end
+
+  defp reconcile_parked_runs do
+    parked = ParkedRuns.list()
+
+    if parked == [] do
+      :ok
+    else
+      settings = Config.settings!().tracker
+      state_names = Enum.uniq(settings.active_states ++ settings.terminal_states)
+
+      case Tracker.fetch_issues_by_states(state_names) do
+        {:ok, issues} ->
+          by_identifier =
+            issues
+            |> Enum.flat_map(fn
+              %Issue{identifier: identifier} = issue when is_binary(identifier) ->
+                [{identifier, issue}]
+
+              _ ->
+                []
+            end)
+            |> Map.new()
+
+          ParkedRunsHooks.reconcile(parked, by_identifier, active_state_set(), terminal_state_set())
+
+        {:error, reason} ->
+          Logger.debug("Failed to reconcile parked runs: #{inspect(reason)}")
+          :ok
+      end
+    end
   end
 
   defp cleanup_issue_workspace(identifier, worker_host \\ nil)
@@ -1230,6 +1327,10 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp pick_retry_workspace_path(previous_retry, metadata) do
     metadata[:workspace_path] || Map.get(previous_retry, :workspace_path)
+  end
+
+  defp pick_retry_session_id(previous_retry, metadata) do
+    metadata[:session_id] || Map.get(previous_retry, :session_id)
   end
 
   defp maybe_put_runtime_value(running_entry, _key, nil), do: running_entry
@@ -1406,7 +1507,8 @@ defmodule SymphonyElixir.Orchestrator do
           issue_url: Map.get(retry, :issue_url),
           error: Map.get(retry, :error),
           worker_host: Map.get(retry, :worker_host),
-          workspace_path: Map.get(retry, :workspace_path)
+          workspace_path: Map.get(retry, :workspace_path),
+          session_id: Map.get(retry, :session_id)
         }
       end)
 
@@ -1476,10 +1578,13 @@ defmodule SymphonyElixir.Orchestrator do
     last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
 
+    summarized = summarize_codex_update(update)
+    log_codex_activity(running_entry, summarized)
+
     {
       Map.merge(running_entry, %{
         last_codex_timestamp: timestamp,
-        last_codex_message: summarize_codex_update(update),
+        last_codex_message: summarized,
         session_id: session_id_for_update(running_entry.session_id, update),
         last_codex_event: event,
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
@@ -1537,6 +1642,26 @@ defmodule SymphonyElixir.Orchestrator do
       message: update[:payload] || update[:raw],
       timestamp: update[:timestamp]
     }
+  end
+
+  defp log_codex_activity(%{identifier: identifier} = entry, summary) when is_binary(identifier) do
+    text = StatusDashboard.humanize_codex_message(summary)
+
+    if persist_codex_activity?(text) do
+      issue_id = Map.get(entry, :issue_id) || "n/a"
+      Logger.info("Codex activity for issue_id=#{issue_id} issue_identifier=#{identifier} #{text}")
+    end
+  end
+
+  defp log_codex_activity(_entry, _summary), do: :ok
+
+  defp persist_codex_activity?(text) when is_binary(text) do
+    cond do
+      text in ["", "no codex message yet"] -> false
+      String.starts_with?(text, "token count") -> false
+      String.starts_with?(text, "thread token usage") -> false
+      true -> true
+    end
   end
 
   defp schedule_tick(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do

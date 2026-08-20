@@ -102,7 +102,12 @@ self-serve. Below, each one and *where it lives and why*.
   # Symphony setup for <your-repo>
 
   ## Prerequisites
-  - mise (toolchain manager), Codex CLI, gh (authenticated), git
+  - mise (toolchain manager)
+  - **Codex CLI on login-shell PATH** (`brew install --cask codex` or `npm i -g @openai/codex`;
+    verify with `sh -lc 'command -v codex'` — Symphony does not invoke Codex via `npx`)
+  - **Git ≥ 2.22** supporting `git clone --filter=blob:none` (verify with
+    `sh -lc 'git clone -h'`; watch for stale `/usr/local/bin/git` shadows)
+  - gh (authenticated) for GitHub-hosted repos, or the equivalent for your forge
   - A built Symphony engine (see the Symphony repo's elixir/README.md), pinned to <version/commit>
 
   ## Required secrets / environment
@@ -201,6 +206,7 @@ target repo — plus workspace sandboxing (`workspace-write`).
 
 ## 5. Quick checklist to make any repo Symphony-ready
 
+- [ ] Host tooling: Codex CLI + Git ≥ 2.22 on **login-shell** PATH (`sh -lc 'command -v codex; git --version'`).
 - [ ] Add `WORKFLOW.<name>.md` at the repo root (front matter + prompt).
 - [ ] Put agent-facing skills in `<repo>/.codex/skills/` (NOT in the Symphony repo).
 - [ ] Add `.symphony/SETUP.md` (prereqs, secrets, Linear provisioning, launch).

@@ -55,32 +55,32 @@ defmodule SymphonyElixir.CodexSessionTailerTest do
   end
 
   test "readable_lines extracts agent message text from jsonl", %{root: root} do
-    path = write_session!(root, [
-      Jason.encode!(%{
-        "type" => "event_msg",
-        "payload" => %{
-          "type" => "agent_message",
-          "message" => "Planning the implementation steps."
-        }
-      }),
-      Jason.encode!(%{
-        "type" => "event_msg",
-        "payload" => %{
-          "type" => "token_count",
-          "info" => %{"total_token_usage" => %{"total_tokens" => 42}}
-        }
-      }),
-      Jason.encode!(%{
-        "type" => "response_item",
-        "payload" => %{
-          "type" => "custom_tool_call",
-          "name" => "exec",
-          "status" => "completed",
-          "input" =>
-            "const r = await tools.exec_command({cmd:\"git status --short\",workdir:\"/tmp\"});"
-        }
-      })
-    ])
+    path =
+      write_session!(root, [
+        Jason.encode!(%{
+          "type" => "event_msg",
+          "payload" => %{
+            "type" => "agent_message",
+            "message" => "Planning the implementation steps."
+          }
+        }),
+        Jason.encode!(%{
+          "type" => "event_msg",
+          "payload" => %{
+            "type" => "token_count",
+            "info" => %{"total_token_usage" => %{"total_tokens" => 42}}
+          }
+        }),
+        Jason.encode!(%{
+          "type" => "response_item",
+          "payload" => %{
+            "type" => "custom_tool_call",
+            "name" => "exec",
+            "status" => "completed",
+            "input" => "const r = await tools.exec_command({cmd:\"git status --short\",workdir:\"/tmp\"});"
+          }
+        })
+      ])
 
     lines = CodexSessionTailer.readable_lines(path)
 
@@ -113,7 +113,7 @@ defmodule SymphonyElixir.CodexSessionTailerTest do
           "payload" => %{
             "type" => "custom_tool_call_output",
             "output" => [
-              %{"type" => "input_text", "text" => "> @filos/contract@1.0.0 build > tsc -p tsconfig.json\n"}
+              %{"type" => "input_text", "text" => "> @example/contract@1.0.0 build > tsc -p tsconfig.json\n"}
             ]
           }
         }),
@@ -132,7 +132,7 @@ defmodule SymphonyElixir.CodexSessionTailerTest do
     assert lines == [
              "item started: reasoning (rs_020c455b4)",
              "item started: wait (fc_01170a31d)",
-             "command output streaming: > @filos/contract@1.0.0 build > tsc -p tsconfig.json",
+             "command output streaming: > @example/contract@1.0.0 build > tsc -p tsconfig.json",
              "[sub-agent] started /root/skill_product_mode"
            ]
   end

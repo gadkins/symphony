@@ -46,44 +46,44 @@ defmodule SymphonyElixir.ParkedRunsTest do
   test "upserts, lists, and persists across process restart", %{log_file: log_file} do
     assert :ok =
              ParkedRuns.upsert(%{
-               issue_identifier: "FIL-39",
+               issue_identifier: "TEST-39",
                session_id: "sess-1",
-               workspace_path: "/ws/FIL-39",
+               workspace_path: "/ws/TEST-39",
                linear_state: "Human Review"
              })
 
-    assert [%{issue_identifier: "FIL-39", session_id: "sess-1"}] = ParkedRuns.list()
+    assert [%{issue_identifier: "TEST-39", session_id: "sess-1"}] = ParkedRuns.list()
 
     persist = Path.join(Path.dirname(log_file), "parked_runs.json")
     assert File.exists?(persist)
 
     :ok = stop_supervised(ParkedRuns)
     start_supervised!({ParkedRuns, []})
-    assert ParkedRuns.get("FIL-39").session_id == "sess-1"
+    assert ParkedRuns.get("TEST-39").session_id == "sess-1"
   end
 
   test "delete removes entry and updates JSON" do
-    ParkedRuns.upsert(%{issue_identifier: "FIL-39", session_id: "s", workspace_path: nil, linear_state: "Human Review"})
-    assert :ok = ParkedRuns.delete("FIL-39")
+    ParkedRuns.upsert(%{issue_identifier: "TEST-39", session_id: "s", workspace_path: nil, linear_state: "Human Review"})
+    assert :ok = ParkedRuns.delete("TEST-39")
     assert ParkedRuns.list() == []
   end
 
   test "persists nil session_id across process restart", %{log_file: log_file} do
     assert :ok =
              ParkedRuns.upsert(%{
-               issue_identifier: "FIL-40",
+               issue_identifier: "TEST-40",
                session_id: "n/a",
-               workspace_path: "/ws/FIL-40",
+               workspace_path: "/ws/TEST-40",
                linear_state: "Human Review"
              })
 
-    assert ParkedRuns.get("FIL-40").session_id == nil
+    assert ParkedRuns.get("TEST-40").session_id == nil
 
     persist = Path.join(Path.dirname(log_file), "parked_runs.json")
     assert File.exists?(persist)
 
     :ok = stop_supervised(ParkedRuns)
     start_supervised!({ParkedRuns, []})
-    assert ParkedRuns.get("FIL-40").session_id == nil
+    assert ParkedRuns.get("TEST-40").session_id == nil
   end
 end

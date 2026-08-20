@@ -423,9 +423,7 @@ defmodule SymphonyElixir.Orchestrator do
         terminate_running_issue(state, issue.id, true)
 
       !issue_routable?(issue) and active_issue_state?(issue.state, active_states) ->
-        Logger.info(
-          "Issue no longer routed to this worker while still active: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent without parking"
-        )
+        Logger.info("Issue no longer routed to this worker while still active: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent without parking")
 
         terminate_running_issue(state, issue.id, false)
 
@@ -468,9 +466,7 @@ defmodule SymphonyElixir.Orchestrator do
         release_issue_claim(state, issue.id)
 
       !issue_routable?(issue) and active_issue_state?(issue.state, active_states) ->
-        Logger.info(
-          "Blocked issue no longer routed to this worker while still active: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; releasing block without parking"
-        )
+        Logger.info("Blocked issue no longer routed to this worker while still active: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; releasing block without parking")
 
         release_issue_claim(state, issue.id)
 
@@ -1177,9 +1173,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       active_issue_state?(issue.state, active_states) ->
         # Still active but not a retry candidate (e.g. unroutable) — do not park.
-        Logger.debug(
-          "Issue still active but not retryable, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier}"
-        )
+        Logger.debug("Issue still active but not retryable, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier}")
 
         {:noreply, release_issue_claim(state, issue_id)}
 

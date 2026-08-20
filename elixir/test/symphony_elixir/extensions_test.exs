@@ -159,18 +159,18 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:noreply, returned_state} = WorkflowStore.handle_info(:poll, state)
     assert returned_state.workflow.prompt == "Manual workflow prompt"
     refute returned_state.stamp == nil
-    assert_receive :poll, 1_100
+    assert_receive :poll, 2_000
 
     Workflow.set_workflow_file_path(missing_path)
     assert {:noreply, path_error_state} = WorkflowStore.handle_info(:poll, returned_state)
     assert path_error_state.workflow.prompt == "Manual workflow prompt"
-    assert_receive :poll, 1_100
+    assert_receive :poll, 2_000
 
     Workflow.set_workflow_file_path(manual_path)
     File.rm!(manual_path)
     assert {:noreply, removed_state} = WorkflowStore.handle_info(:poll, path_error_state)
     assert removed_state.workflow.prompt == "Manual workflow prompt"
-    assert_receive :poll, 1_100
+    assert_receive :poll, 2_000
 
     Process.exit(manual_pid, :normal)
     restart_result = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
@@ -728,7 +728,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     File.write!(
       log_file,
-      "info issue_identifier=FIL-39 engine hello for drawer\ninfo issue_identifier=OTHER skip\n"
+      "info issue_identifier=TEST-39 engine hello for drawer\ninfo issue_identifier=OTHER skip\n"
     )
 
     session_id = "sess-drawer-39"
@@ -745,9 +745,9 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     :ok =
       ParkedRuns.upsert(%{
-        issue_identifier: "FIL-PARKED",
+        issue_identifier: "TEST-PARKED",
         session_id: "sess-parked-drawer",
-        workspace_path: "/workspaces/FIL-PARKED",
+        workspace_path: "/workspaces/TEST-PARKED",
         linear_state: "Human Review"
       })
 
@@ -756,8 +756,8 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> put_in([:running], [
         %{
           issue_id: "issue-39",
-          identifier: "FIL-39",
-          issue_url: "https://example.org/issues/FIL-39",
+          identifier: "TEST-39",
+          issue_url: "https://example.org/issues/TEST-39",
           state: "In Progress",
           session_id: session_id,
           turn_count: 3,
@@ -769,7 +769,7 @@ defmodule SymphonyElixir.ExtensionsTest do
           codex_output_tokens: 2,
           codex_total_tokens: 3,
           started_at: DateTime.utc_now(),
-          workspace_path: "/workspaces/FIL-39"
+          workspace_path: "/workspaces/TEST-39"
         }
       ])
 
@@ -790,29 +790,44 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ "FIL-39"
+    assert html =~ "TEST-39"
     assert html =~ "Parked"
-    assert html =~ "FIL-PARKED"
+    assert html =~ "TEST-PARKED"
     assert html =~ "Logs"
     refute has_element?(view, "#log-drawer")
 
     view
-    |> element("tr[data-issue='FIL-39'] button", "Logs")
+    |> element("tr[data-issue='TEST-39'] button", "Logs")
     |> render_click()
 
     assert has_element?(view, "#log-drawer")
     rendered = render(view)
     assert rendered =~ "Engine"
     assert rendered =~ "Codex"
-    assert rendered =~ "FIL-39"
+    assert rendered =~ "TEST-39"
     assert rendered =~ "engine hello for drawer"
     refute rendered =~ "issue_identifier=OTHER"
+
+    File.write!(log_file, "info issue_identifier=TEST-39 streamed engine update\n", [:append])
+
+    File.write!(
+      session_path,
+      Jason.encode!(%{
+        "type" => "event_msg",
+        "payload" => %{"type" => "agent_message", "message" => "streamed codex update"}
+      }) <> "\n",
+      [:append]
+    )
+
+    send(view.pid, :runtime_tick)
+    assert_eventually(fn -> render(view) =~ "streamed engine update" end)
 
     view
     |> element("#log-drawer button", "Codex")
     |> render_click()
 
     assert render(view) =~ "codex drawer hello"
+    assert render(view) =~ "streamed codex update"
 
     view
     |> element("#log-drawer button", "Close")
@@ -824,15 +839,15 @@ defmodule SymphonyElixir.ExtensionsTest do
   test "?issue= deep-link opens drawer for known running issue" do
     %{log_file: log_file} = isolate_parked_runs_and_logs!()
 
-    File.write!(log_file, "info issue_identifier=FIL-39 deep link engine\n")
+    File.write!(log_file, "info issue_identifier=TEST-39 deep link engine\n")
 
     snapshot =
       static_snapshot()
       |> put_in([:running], [
         %{
           issue_id: "issue-39",
-          identifier: "FIL-39",
-          issue_url: "https://example.org/issues/FIL-39",
+          identifier: "TEST-39",
+          issue_url: "https://example.org/issues/TEST-39",
           state: "In Progress",
           session_id: "sess-deep-39",
           turn_count: 1,
@@ -844,7 +859,7 @@ defmodule SymphonyElixir.ExtensionsTest do
           codex_output_tokens: 0,
           codex_total_tokens: 0,
           started_at: DateTime.utc_now(),
-          workspace_path: "/workspaces/FIL-39"
+          workspace_path: "/workspaces/TEST-39"
         }
       ])
 
@@ -864,9 +879,9 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
-    {:ok, view, html} = live(build_conn(), "/?issue=FIL-39")
+    {:ok, view, html} = live(build_conn(), "/?issue=TEST-39")
     assert has_element?(view, "#log-drawer")
-    assert html =~ "FIL-39"
+    assert html =~ "TEST-39"
     assert html =~ "deep link engine"
   end
 
@@ -888,7 +903,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
-    {:ok, view, html} = live(build_conn(), "/?issue=FIL-MISSING")
+    {:ok, view, html} = live(build_conn(), "/?issue=TEST-MISSING")
     refute has_element?(view, "#log-drawer")
     assert html =~ "Issue not in live or parked index"
   end

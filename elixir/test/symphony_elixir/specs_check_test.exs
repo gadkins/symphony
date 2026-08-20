@@ -30,6 +30,22 @@ defmodule SymphonyElixir.SpecsCheckTest do
     assert SpecsCheck.missing_public_specs([dir]) == []
   end
 
+  test "accepts an adjacent @spec on a multi-clause function with defaults" do
+    dir = create_tmp_dir()
+
+    write_module!(dir, "sample.ex", """
+    defmodule Sample do
+      @spec resolve(term(), keyword()) :: term()
+      def resolve(value, opts \\\\ [])
+
+      def resolve(nil, _opts), do: nil
+      def resolve(value, opts), do: {value, opts}
+    end
+    """)
+
+    assert SpecsCheck.missing_public_specs([dir]) == []
+  end
+
   test "allows defp without @spec" do
     dir = create_tmp_dir()
 

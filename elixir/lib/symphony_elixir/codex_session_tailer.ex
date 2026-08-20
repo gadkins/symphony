@@ -130,19 +130,23 @@ defmodule SymphonyElixir.CodexSessionTailer do
   defp format_line(line) do
     line = String.trim(line)
 
-    if line == "" do
-      []
-    else
-      case Jason.decode(line) do
-        {:ok, event} ->
-          case readable_from_event(event) do
-            nil -> []
-            formatted -> [formatted]
-          end
+    case line do
+      "" -> []
+      line -> format_nonempty_line(line)
+    end
+  end
 
-        {:error, _} ->
-          [truncate_raw(line)]
-      end
+  defp format_nonempty_line(line) do
+    case Jason.decode(line) do
+      {:ok, event} -> readable_event_line(event)
+      {:error, _} -> [truncate_raw(line)]
+    end
+  end
+
+  defp readable_event_line(event) do
+    case readable_from_event(event) do
+      nil -> []
+      formatted -> [formatted]
     end
   end
 

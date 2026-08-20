@@ -551,12 +551,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp log_pane_text(issue, :codex, _engine_lines, []) do
-    cond do
-      issue.session_id in [nil, "", "n/a"] ->
-        "No Codex session_id for this run."
-
-      true ->
-        "Codex session transcript not found or empty for session #{issue.session_id}."
+    if issue.session_id in [nil, "", "n/a"] do
+      "No Codex session_id for this run."
+    else
+      "Codex session transcript not found or empty for session #{issue.session_id}."
     end
   end
 
@@ -686,59 +684,66 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp visible_lines(_tab, engine_lines, _codex_lines), do: engine_lines
 
   defp resolve_issue_meta(payload, id) when is_binary(id) do
-    parked = Enum.find(payload[:parked] || [], &(&1.issue_identifier == id))
-    running = Enum.find(payload[:running] || [], &(&1.issue_identifier == id))
-    blocked = Enum.find(payload[:blocked] || [], &(&1.issue_identifier == id))
-    retrying = Enum.find(payload[:retrying] || [], &(&1.issue_identifier == id))
+    parked = find_issue(payload, :parked, id)
+    running = find_issue(payload, :running, id)
+    blocked = find_issue(payload, :blocked, id)
+    retrying = find_issue(payload, :retrying, id)
 
     cond do
-      running ->
-        %{
-          issue_identifier: id,
-          session_id: Map.get(running, :session_id),
-          parked?: false,
-          linear_state: Map.get(running, :state),
-          workspace_path: Map.get(running, :workspace_path)
-        }
-
-      blocked ->
-        %{
-          issue_identifier: id,
-          session_id: Map.get(blocked, :session_id),
-          parked?: false,
-          linear_state: Map.get(blocked, :state),
-          workspace_path: Map.get(blocked, :workspace_path)
-        }
-
-      retrying ->
-        %{
-          issue_identifier: id,
-          session_id: (parked && Map.get(parked, :session_id)) || Map.get(retrying, :session_id),
-          parked?: not is_nil(parked),
-          linear_state: (parked && Map.get(parked, :linear_state)) || nil,
-          workspace_path:
-            Map.get(retrying, :workspace_path) || (parked && Map.get(parked, :workspace_path))
-        }
-
-      parked ->
-        %{
-          issue_identifier: id,
-          session_id: Map.get(parked, :session_id),
-          parked?: true,
-          linear_state: Map.get(parked, :linear_state),
-          workspace_path: Map.get(parked, :workspace_path)
-        }
-
-      true ->
-        %{
-          issue_identifier: id,
-          session_id: nil,
-          parked?: false,
-          linear_state: nil,
-          workspace_path: nil
-        }
+      running -> active_issue_meta(id, running)
+      blocked -> active_issue_meta(id, blocked)
+      retrying -> retrying_issue_meta(id, retrying, parked)
+      parked -> parked_issue_meta(id, parked)
+      true -> empty_issue_meta(id)
     end
   end
+
+  defp find_issue(payload, key, id) do
+    Enum.find(payload[key] || [], &(&1.issue_identifier == id))
+  end
+
+  defp active_issue_meta(id, issue) do
+    %{
+      issue_identifier: id,
+      session_id: Map.get(issue, :session_id),
+      parked?: false,
+      linear_state: Map.get(issue, :state),
+      workspace_path: Map.get(issue, :workspace_path)
+    }
+  end
+
+  defp retrying_issue_meta(id, retrying, parked) do
+    %{
+      issue_identifier: id,
+      session_id: parked_value(parked, :session_id) || Map.get(retrying, :session_id),
+      parked?: not is_nil(parked),
+      linear_state: parked_value(parked, :linear_state),
+      workspace_path: Map.get(retrying, :workspace_path) || parked_value(parked, :workspace_path)
+    }
+  end
+
+  defp parked_issue_meta(id, parked) do
+    %{
+      issue_identifier: id,
+      session_id: Map.get(parked, :session_id),
+      parked?: true,
+      linear_state: Map.get(parked, :linear_state),
+      workspace_path: Map.get(parked, :workspace_path)
+    }
+  end
+
+  defp empty_issue_meta(id) do
+    %{
+      issue_identifier: id,
+      session_id: nil,
+      parked?: false,
+      linear_state: nil,
+      workspace_path: nil
+    }
+  end
+
+  defp parked_value(nil, _key), do: nil
+  defp parked_value(parked, key), do: Map.get(parked, key)
 
   defp load_payload do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
@@ -848,8 +853,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
     normalized = state |> to_string() |> String.downcase()
 
     cond do
-      String.contains?(normalized, ["progress", "running", "active"]) -> "#{base} state-badge-active"
-      String.contains?(normalized, ["blocked", "error", "failed"]) -> "#{base} state-badge-danger"
+      String.contains?(normalized, ["progress", "running", "active"]) ->
+        "#{base} state-badge-active"
+
+      String.contains?(normalized, ["blocked", "error", "failed"]) ->
+        "#{base} state-badge-danger"
+
       String.contains?(normalized, ["todo", "queued", "pending", "retry", "review", "parked", "merging"]) ->
         "#{base} state-badge-warning"
 

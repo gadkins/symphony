@@ -36,8 +36,8 @@ version.
 | Workflow style | `pr` (draft PR, human merges) vs `land` (auto-land) | which workflow to scaffold |
 
 Confirm the target repo has (or create): a package manager, a test command, a
-typecheck/lint command, and — if a Gus-style response can change — a dev-server +
-health endpoint for end-to-end checks.
+typecheck/lint command and, if an agent-facing response can change, a dev server
+plus health endpoint for end-to-end checks.
 
 ## Step 0.5 — Host tooling (required before Step 1)
 

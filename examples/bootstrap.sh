@@ -55,8 +55,16 @@ have() { command -v "$1" >/dev/null 2>&1; }
 log "Checking prerequisites…"
 have mise || die "mise not found — install it first (toolchain manager)."
 have git  || die "git not found."
+have codex || die "codex CLI not found on PATH — install with: brew install --cask codex  (or: npm i -g @openai/codex)"
+# Symphony hooks run under sh -lc; verify the same PATH the agent will see.
+sh -lc 'command -v codex >/dev/null' \
+  || die "codex not found under sh -lc (login PATH). Install via Homebrew cask or add npm global bin to login PATH."
+if ! sh -lc 'git clone -h 2>&1 | grep -q -- "--filter"'; then
+  die "git under sh -lc lacks --filter (need Git ≥ 2.22). Upgrade git and ensure /opt/homebrew/bin precedes stale /usr/local/bin/git."
+fi
+log "Host tooling OK: $(sh -lc 'git --version; codex --version')"
 have gh   || log "WARN: gh (GitHub CLI) not found; the workflow needs it to open PRs."
-have npx  || log "WARN: npx not found; Codex is usually run via 'npx @openai/codex'."
+have npx  || log "WARN: npx not found (optional if codex is installed directly)."
 [ -d "$SYMPHONY_DIR" ] || die "SYMPHONY_DIR not found: $SYMPHONY_DIR"
 [ -f "$WORKFLOW_FILE" ] || die "WORKFLOW_FILE not found: $WORKFLOW_FILE"
 

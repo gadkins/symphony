@@ -100,7 +100,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - `linear`: interact with Linear.
 - `commit`: produce clean, logical commits during implementation.
 - `push`: keep remote branch current and publish updates.
-- `pull`: keep branch updated with latest `origin/main` before handoff.
+- `pull`: keep branch updated with latest `origin/develop` before handoff.
 - `land`: when ticket reaches `Merging`, explicitly open and follow `.codex/skills/land/SKILL.md`, which includes the `land` loop.
 
 ## Status map
@@ -129,7 +129,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
    - `Done` -> do nothing and shut down.
 4. Check whether a PR already exists for the current branch and whether it is closed.
    - If a branch PR exists and is `CLOSED` or `MERGED`, treat prior branch work as non-reusable for this run.
-   - Create a fresh branch from `origin/main` and restart execution flow as a new attempt.
+   - Create a fresh branch from `origin/develop` and restart execution flow as a new attempt.
 5. For `Todo` tickets, do startup sequencing in this exact order:
    - `update_issue(..., state: "In Progress")`
    - find/create `## Codex Workpad` bootstrap comment
